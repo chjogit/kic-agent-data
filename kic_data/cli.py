@@ -687,34 +687,45 @@ def cmd_investor_flows(args) -> int:
 
 
 def cmd_lending(args) -> int:
-    """코스피 종목별 일별 대차거래 (하루 1회 호출로 코스피 전 종목). 등록된 국내 종목만 저장합니다."""
+    """코스피 종목별 일별 대차거래 (하루 1회 호출로 코스피 전 종목). 등록된 국내 종목만 저장합니다.
+
+    최근 days 일 중 시세가 있는 거래일(core.price_daily)인데 대차 행이 없는 날만, 최근 날짜부터 max_days 일씩 받습니다.
+    한 번 부를 때 약 3초라 1년치를 한 번에 받으면 십여 분 걸리므로 매시간 나눠 채웁니다.
+    API 를 부르는 동안 DB 연결을 열어 두면 Neon 이 끊으므로, 읽기·쓰기 연결을 따로 엽니다.
+    """
     s = make_session()
     today = date.today()
+    since = today - timedelta(days=args.days)
     with db.connect() as conn:
         ids = {t: cid for cid, t, *_ in db.list_companies(conn, "KR")}
         if not ids:
             return 0
-        by_cid: dict[int, list] = {}
-        days = bad = 0
-        for i in range(args.days, 0, -1):  # 오늘분은 다음 영업일 오후에 나오므로 어제까지
-            d = today - timedelta(days=i)
-            if d.weekday() >= 5:
-                continue
-            try:
-                rows = lending.fetch_day(s, d)
-            except RuntimeError as exc:
-                _fail(f"대차 {d}", str(exc))
-                bad += 1
-                continue
-            days += bool(rows)
-            for r in rows:
-                if r["ticker"] in ids:
-                    by_cid.setdefault(ids[r["ticker"]], []).append(r)
+        have = db.lending_dates(conn, since)
+        todo = [d for d in db.trading_dates(conn, "KR", since) if d < today and d not in have]
+    todo = sorted(todo, reverse=True)[:args.max_days] if args.max_days else sorted(todo, reverse=True)
+    if not todo:
+        _ok("대차거래", "받을 날짜 없음 (모두 수집됨)")
+        return 0
+    by_cid: dict[int, list] = {}
+    days = bad = 0
+    for d in todo:
+        try:
+            rows = lending.fetch_day(s, d)
+        except RuntimeError as exc:
+            _fail(f"대차 {d}", str(exc))
+            bad += 1
+            continue
+        days += bool(rows)
+        for r in rows:
+            if r["ticker"] in ids:
+                by_cid.setdefault(ids[r["ticker"]], []).append(r)
+    with db.connect() as conn:
         n = sum(db.upsert_lending(conn, cid, rows, "fsc_lending") for cid, rows in by_cid.items())
-    if n == 0 and not bad:  # 응답은 정상인데 행이 없으면 실패로 남겨 자동 실행 요약에서 보이게
+    # 최근 1~2 영업일은 아직 공개 전일 수 있음. 며칠 지난 날짜도 0건이면 승인·엔드포인트 문제로 보고 실패로 남김
+    if n == 0 and not bad and min(todo) <= today - timedelta(days=4):
         _fail("대차거래", "0건: 활용신청 승인·엔드포인트를 확인하세요")
         return 1
-    _ok("대차거래", f"{days}거래일, {len(by_cid)}/{len(ids)}종목, {n}행")
+    _ok("대차거래", f"{len(todo)}일 요청 중 {days}거래일 수신 ({min(todo)}~{max(todo)}), {len(by_cid)}/{len(ids)}종목, {n}행")
     return 1 if bad else 0
 
 
@@ -1109,6 +1120,7 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-investor-flows"); a.add_argument("--days", type=int, default=10)
     a.set_defaults(fn=cmd_investor_flows)
     a = sub.add_parser("collect-lending"); a.add_argument("--days", type=int, default=10)
+    a.add_argument("--max-days", type=int, default=None, help="한 번에 받을 최대 거래일 수 (최근 날짜부터)")
     a.set_defaults(fn=cmd_lending)
     args = p.parse_args(argv)
     try:
