@@ -688,11 +688,11 @@ def cmd_probe_bulk(args) -> int:
         out = dart.fetch_multi(s, corps, today.year - 1)
         sample = next(iter(out.values()), [])
         _ok("DART 다중회사", f"{len(out)}/{len(corps)}개사, 키 예: {list(out)[:3]}, "
-                          f"계정 예: {[(r['fs_div'], r['account_nm'], r['account_id']) for r in sample[:8]]}")
+                          f"손익 계정: {sorted({(r['account_nm'], r['account_id']) for r in sample if r['sj_div'] == 'IS'})}")
     except RuntimeError as exc:
         _fail("DART 다중회사", str(exc)); bad += 1
     try:
-        rows = dart.fetch_disclosures(s, None, ymd(today - timedelta(days=2)), ymd(today), "A", max_pages=3, corp_cls="Y")
+        rows = dart.fetch_disclosures(s, None, ymd(today - timedelta(days=5)), ymd(today), "A", max_pages=3, corp_cls="Y")
         _ok("DART 시장 전체 공시", f"{len(rows)}건, corp_code 있음={all(r['corp_code'] for r in rows)}")
     except RuntimeError as exc:
         _fail("DART 시장 전체 공시", str(exc)); bad += 1
