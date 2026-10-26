@@ -14,6 +14,7 @@ def make_session(user_agent: str | None = None) -> requests.Session:
     session = requests.Session()
     retry = Retry(
         total=4,
+        connect=1,  # 접속 자체가 안 되면 오래 기다리지 않음 (원천 서버 장애 때 실행 시간을 다 쓰지 않게)
         backoff_factor=1.0,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=("GET",),
@@ -45,12 +46,24 @@ def redact(params: dict | None) -> dict:
     return {k: v for k, v in (params or {}).items() if k not in SECRET_PARAM_NAMES}
 
 
+CONNECT_TIMEOUT = 10  # 초
+DOWN_FOR = 600  # 접속이 안 된 원천은 이 시간(초) 동안 바로 실패 처리 → 다음 실행에서 다시
+_down: dict[str, float] = {}
+
+
 def get(session, source: str, url: str, params=None, headers=None, timeout: int = 30, limiter=None):
     """GET 호출. 실패해도 URL(인증키 포함 가능)은 메시지에 넣지 않습니다."""
+    key = source.split("-")[0]  # fsc, fsc-etf 는 같은 서버
+    since = _down.get(key)
+    if since is not None and time.monotonic() - since < DOWN_FOR:
+        raise RuntimeError(f"[{source}] 접속 안 됨 (방금 실패해 이번 실행에서는 건너뜀)")
     if limiter is not None:
         limiter.wait()
     try:
-        response = session.get(url, params=params, headers=headers, timeout=timeout)
+        response = session.get(url, params=params, headers=headers, timeout=(CONNECT_TIMEOUT, timeout))
+    except (requests.ConnectionError, requests.ConnectTimeout) as exc:
+        _down[key] = time.monotonic()
+        raise RuntimeError(f"[{source}] 요청 실패: {type(exc).__name__}") from None
     except requests.RequestException as exc:
         raise RuntimeError(f"[{source}] 요청 실패: {type(exc).__name__}") from None
     if response.status_code != 200:
