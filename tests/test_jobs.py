@@ -269,3 +269,23 @@ def test_kospi200_jobs_wired():
     from kic_data import cli
     for j in jobs.JOBS:
         assert hasattr(cli, j.command), j.command
+
+
+def test_unreachable_source_fails_fast(monkeypatch):
+    import requests
+    from kic_data import http_util
+
+    calls = []
+
+    class S:
+        def get(self, *a, **k):
+            calls.append(k.get("timeout"))
+            raise requests.ConnectTimeout("x")
+
+    http_util._down.clear()
+    with pytest.raises(RuntimeError):
+        http_util.get(S(), "fsc", "https://example.invalid")
+    with pytest.raises(RuntimeError, match="건너뜀"):
+        http_util.get(S(), "fsc-etf", "https://example.invalid")  # 같은 서버는 바로 실패
+    assert len(calls) == 1 and calls[0][0] == http_util.CONNECT_TIMEOUT
+    http_util._down.clear()

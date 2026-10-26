@@ -482,6 +482,8 @@ def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 2
                 waiting.append(job.name)
                 break
             reason = "이어서"
+        if job.name == "sync-kospi200":  # 새 종목이 들어오면 과거분 작업을 되돌리므로 같은 실행에서 바로 반영
+            states = state.all()
     return {"ran": ran, "waiting": waiting, "seconds": round(clock() - t0, 1)}
 
 
