@@ -30,6 +30,8 @@
   collect-etf      국내 ETF 시세·NAV (금융위원회 증권상품시세정보, universe.py 의 ETF_UNIVERSE)
   collect-finnhub  해외 종목 영문 뉴스 (Finnhub, FINNHUB_API_KEY 있을 때만)
   collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
+  collect-investor-flows  국내 종목 투자자별(외국인·기관·개인) 일별 순매수 (네이버 증권 공개 API)
+  collect-lending  코스피 종목별 일별 주식 대차거래·잔고 (금융위원회 주식대차거래정보, 공매도 대용)
   collect-kr-prices / collect-us-prices / collect-dart / collect-sec / collect-macro
   tick             시간표(kic_data/jobs.py)상 차례가 된 작업을 실행 (GitHub Actions 매시간 실행용)
 
@@ -43,8 +45,8 @@ import sys
 from datetime import date, timedelta
 
 from . import db, features, krx_sector, pulse, quarterly, rag, sentiment, status
-from .collectors import (community, customs, dart, etf, finnhub, fsc, indices, kospi200, macro, news, sec, trends,
-                         us_prices, youtube)
+from .collectors import (community, customs, dart, etf, finnhub, fsc, indices, investor_flow, kospi200, lending, macro,
+                         news, sec, trends, us_prices, youtube)
 from .config import env
 from .http_util import make_session
 from .universe import ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_UNIVERSE
@@ -666,6 +668,56 @@ def cmd_youtube(args) -> int:
     return 1 if bad else 0
 
 
+def cmd_investor_flows(args) -> int:
+    """국내 종목 투자자별 일별 순매수 (네이버 증권 공개 API, 키 불필요)."""
+    s = make_session()
+    since = date.today() - timedelta(days=args.days)
+    bad = 0
+    with db.connect() as conn:
+        for cid, ticker, *_ in db.list_companies(conn, "KR"):
+            try:
+                rows = drop_incomplete_today(investor_flow.fetch_flows(s, ticker, since), "KR")
+            except RuntimeError as exc:
+                _fail(f"KR:{ticker}", str(exc))
+                bad += 1
+                continue
+            n = db.upsert_investor_flows(conn, cid, rows, "naver_trend")
+            _ok(f"KR:{ticker}", f"{n}행" + (f" ({rows[0]['trade_date']}~{rows[-1]['trade_date']})" if rows else ""))
+    return 1 if bad else 0
+
+
+def cmd_lending(args) -> int:
+    """코스피 종목별 일별 대차거래 (하루 1회 호출로 코스피 전 종목). 등록된 국내 종목만 저장합니다."""
+    s = make_session()
+    today = date.today()
+    with db.connect() as conn:
+        ids = {t: cid for cid, t, *_ in db.list_companies(conn, "KR")}
+        if not ids:
+            return 0
+        by_cid: dict[int, list] = {}
+        days = bad = 0
+        for i in range(args.days, 0, -1):  # 오늘분은 다음 영업일 오후에 나오므로 어제까지
+            d = today - timedelta(days=i)
+            if d.weekday() >= 5:
+                continue
+            try:
+                rows = lending.fetch_day(s, d)
+            except RuntimeError as exc:
+                _fail(f"대차 {d}", str(exc))
+                bad += 1
+                continue
+            days += bool(rows)
+            for r in rows:
+                if r["ticker"] in ids:
+                    by_cid.setdefault(ids[r["ticker"]], []).append(r)
+        n = sum(db.upsert_lending(conn, cid, rows, "fsc_lending") for cid, rows in by_cid.items())
+    if n == 0 and not bad:  # 응답은 정상인데 행이 없으면 실패로 남겨 자동 실행 요약에서 보이게
+        _fail("대차거래", "0건: 활용신청 승인·엔드포인트를 확인하세요")
+        return 1
+    _ok("대차거래", f"{days}거래일, {len(by_cid)}/{len(ids)}종목, {n}행")
+    return 1 if bad else 0
+
+
 def cmd_probe_bulk(args) -> int:
     """KOSPI 200·일괄 조회 API 응답만 확인합니다 (DB 에 쓰지 않음, 키 값은 출력하지 않음)."""
     s = make_session()
@@ -877,7 +929,9 @@ def cmd_build_features(args) -> int:
             }
             rows = features.compute_features(
                 {**snap, "ccy": snap.get("ttm_currency") or snap.get("fin_currency")},
-                db.fetch_prices(conn, cid), db.fetch_quarters(conn, cid), macro, peers, attention)
+                db.fetch_prices(conn, cid), db.fetch_quarters(conn, cid), macro, peers, attention,
+                db.fetch_investor_flows(conn, cid) if key[0] == "KR" else None,
+                db.fetch_lending(conn, cid) if key[0] == "KR" else None)
             n = db.replace_features(conn, cid, today, rows)
             _ok(f"{key[0]} {key[1]}", f"지표 {n}개 (비교군 {peers['n']}개)")
     return 0
@@ -1052,6 +1106,10 @@ def main(argv=None) -> int:
     a.add_argument("--videos", type=int, default=5); a.add_argument("--comments", type=int, default=100)
     a.add_argument("--top-kr", type=int, default=None, help="국내는 시총 상위 N종목만 (할당량)")
     a.set_defaults(fn=cmd_youtube)
+    a = sub.add_parser("collect-investor-flows"); a.add_argument("--days", type=int, default=10)
+    a.set_defaults(fn=cmd_investor_flows)
+    a = sub.add_parser("collect-lending"); a.add_argument("--days", type=int, default=10)
+    a.set_defaults(fn=cmd_lending)
     args = p.parse_args(argv)
     try:
         return args.fn(args)
