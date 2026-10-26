@@ -1,10 +1,9 @@
-# 2시간마다 데이터 수집 (GitHub Actions 만으로 실행, 서버 불필요)
+# 매시간 데이터 수집 (GitHub Actions 만으로 실행, 서버 불필요)
 # 저장소 Settings → Secrets and variables → Actions → New repository secret 에 키를 넣으세요 (docs/AUTO_RUN.md).
 # 없는 키는 그 작업만 '건너뜀' 으로 처리되므로 DATABASE_URL 만 있어도 시작할 수 있습니다.
 #
-# 무료 사용량: 공개(public) 저장소는 무제한, 비공개(private)는 월 2,000분입니다.
-#   매시간 1회 ≈ 3~5분 → 월 2,200~3,600분이라 비공개 저장소는 한도를 넘을 수 있습니다.
-#   비공개로 쓰려면 아래 cron 을 2시간 간격("7 */2 * * *")으로 바꾸세요 (월 약 1,100~1,800분).
+# 사용량: 이 저장소는 공개(public)라 Actions 시간이 무제한입니다 (비공개로 돌리면 월 2,000분 한도라
+#   KOSPI 200 규모에서는 cron 을 6~8시간 간격으로 줄여야 합니다).
 name: kic-collect
 on:
   schedule:
