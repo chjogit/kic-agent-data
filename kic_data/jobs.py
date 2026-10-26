@@ -24,6 +24,7 @@ from . import db
 
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
+WEEK = timedelta(days=7)
 ONCE = None  # 한 번 끝나면 다시 하지 않음 (대시보드에서 수동 재실행 가능)
 
 LOG_LIMIT = 20000  # job_run.log 에 남길 최대 글자 수
@@ -62,7 +63,8 @@ def _years_ago(n: int):
 DB = ("DATABASE_URL",)
 NAVER = ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET")
 
-# 실행 순서 = 목록 순서. 준비 → 과거분(1회) → 재무(매일) → 매시간 수집 → 감성·언급량 → 지표 재계산
+# 실행 순서 = 목록 순서. 준비 → 과거분(1회) → 매시간 수집 → 감성·언급량 → 재무 → 지표 재계산
+# 재무는 DART 호출이 많아(국내 종목 1개 5년치 ≈ 35초) 자주 도는 수집이 밀리지 않게 뒤에 둡니다.
 JOBS: list[Job] = [
     # 준비 (매일 1회: 종목을 바꾸면 다음 날 자동 반영, 급하면 대시보드에서 수동 실행)
     Job("apply-schema", "DB 스키마 적용", "cmd_apply_schema", every=DAY, needs=DB, group="준비"),
@@ -88,17 +90,8 @@ JOBS: list[Job] = [
         needs=DB + NAVER, split=("KR", "US"), chunk=6, group="과거분(1회)"),
     Job("backfill-trends", "검색 관심도 1년", "cmd_trends", {"days": 365}, every=ONCE, needs=DB,
         needs_any=("NCP_APIHUB_KEY_ID", "NAVER_CLIENT_ID"), group="과거분(1회)"),
-    # 재무 (매일): 새 분기 보고서가 나오면 다음 날 반영
-    Job("dart-annual", "국내 연간 재무", "cmd_dart", {"from_year": _years_ago(5)}, every=DAY,
-        needs=DB + ("DART_API_KEY",), split=("KR",), chunk=4, group="재무(매일)"),
-    Job("dart-quarterly", "국내 분기 재무", "cmd_dart_q", {"from_year": _years_ago(2)}, every=DAY,
-        needs=DB + ("DART_API_KEY",), split=("KR",), chunk=3, group="재무(매일)"),
-    Job("sec-annual", "해외 연간 재무", "cmd_sec", {"from_year": _years_ago(5)}, every=DAY,
-        needs=DB + ("SEC_USER_AGENT",), split=("US",), chunk=5, group="재무(매일)"),
-    Job("sec-quarterly", "해외 분기 재무", "cmd_sec_q", {"from_year": _years_ago(2)}, every=DAY,
-        needs=DB + ("SEC_USER_AGENT",), split=("US",), chunk=5, group="재무(매일)"),
-    Job("build-quarterly", "분기 단독 값·TTM", "cmd_build_quarterly", every=DAY, needs=DB, group="재무(매일)"),
-    Job("build-peer-groups", "Peer Group", "cmd_build_peers", every=DAY, needs=DB, group="재무(매일)"),
+    Job("backfill-dart-quarterly", "국내 분기 재무 2년", "cmd_dart_q", {"from_year": _years_ago(2)}, every=ONCE,
+        needs=DB + ("DART_API_KEY",), split=("KR",), chunk=3, group="과거분(1회)"),
     # 매시간
     Job("kr-prices", "국내 시세", "cmd_kr_prices", {"days": 10}, needs=DB + ("FSC_API_KEY",), split=("KR",), chunk=10),
     Job("us-prices", "해외 시세", "cmd_us_prices", {"days": 10}, needs=DB, split=("US",), chunk=10),
@@ -115,6 +108,17 @@ JOBS: list[Job] = [
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
     Job("mentions", "언급량 스냅샷", "cmd_pulse", {"tickers": None, "max_age": 0, "market_hours": False},
         needs=DB + NAVER, split=("KR", "US"), chunk=12),
+    # 재무: 연간은 매주(5년치), 분기는 매일 올해분만 확인(과거 2년치는 과거분에서 1회)
+    Job("dart-annual", "국내 연간 재무", "cmd_dart", {"from_year": _years_ago(5)}, every=WEEK,
+        needs=DB + ("DART_API_KEY",), split=("KR",), chunk=4, group="재무"),
+    Job("dart-quarterly", "국내 분기 재무(올해)", "cmd_dart_q", {"from_year": _years_ago(0)}, every=DAY,
+        needs=DB + ("DART_API_KEY",), split=("KR",), chunk=6, group="재무"),
+    Job("sec-annual", "해외 연간 재무", "cmd_sec", {"from_year": _years_ago(5)}, every=DAY,
+        needs=DB + ("SEC_USER_AGENT",), split=("US",), chunk=5, group="재무"),
+    Job("sec-quarterly", "해외 분기 재무", "cmd_sec_q", {"from_year": _years_ago(2)}, every=DAY,
+        needs=DB + ("SEC_USER_AGENT",), split=("US",), chunk=5, group="재무"),
+    Job("build-quarterly", "분기 단독 값·TTM", "cmd_build_quarterly", every=DAY, needs=DB, group="재무"),
+    Job("build-peer-groups", "Peer Group", "cmd_build_peers", every=DAY, needs=DB, group="재무"),
     Job("build-features", "5개 관점 지표 재계산", "cmd_build_features", needs=DB),
 ]
 JOB_BY_NAME = {j.name: j for j in JOBS}
@@ -442,7 +446,7 @@ def overview(state, getenv=None) -> list[dict]:
         missing = job.missing_env(getenv)
         out.append({
             "name": job.name, "label": job.label, "group": job.group,
-            "every": "1회" if job.every is ONCE else ("매시간" if job.every == HOUR else "매일"),
+            "every": "1회" if job.every is ONCE else {HOUR: "매 실행", DAY: "매일", WEEK: "매주"}.get(job.every, str(job.every)),
             "status": st.get("last_status"), "detail": st.get("detail"),
             "last_finished": st.get("last_finished"), "last_complete": st.get("last_complete"),
             "seconds": None if st.get("last_seconds") is None else float(st["last_seconds"]),
