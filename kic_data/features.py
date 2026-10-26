@@ -265,9 +265,54 @@ def attention_rows(attention: dict | None) -> list[dict]:
     ]
 
 
+def flow_rows(flows: list[dict] | None) -> list[dict]:
+    """투자자별 순매수 (core.investor_flow_daily, 오름차순). 국내 종목만, 해외는 None → 행 없음."""
+    if flows is None:
+        return []
+    note = "네이버 증권 투자자별 매매동향(수량 기준)"
+    last = flows[-20:]
+    vol = sum(_f(r["volume"]) or 0 for r in last)
+    rows = []
+    for who, col in (("foreign", "foreign_net_qty"), ("institution", "institution_net_qty"), ("individual", "individual_net_qty")):
+        net = [_f(r[col]) for r in last if r[col] is not None]
+        val = sum(net) / vol if len(last) >= 20 and net and vol else None
+        rows.append(_row("supply_demand", f"{who}_net_buy_20d_ratio", val, "ratio",
+                         f"최근 20거래일 순매수 수량 합 / 거래량 합. {note}" if val is not None else "투자자별 데이터 20거래일 미만"))
+    streak = 0
+    for r in reversed(flows):
+        q = _f(r["foreign_net_qty"])
+        if not q or (streak and (q > 0) != (streak > 0)):
+            break
+        streak += 1 if q > 0 else -1
+    rows.append(_row("supply_demand", "foreign_net_buy_streak", streak if flows else None, "days",
+                     "외국인 연속 순매수(+)·순매도(−) 거래일 수"))
+    holds = [(r["trade_date"], _f(r["foreign_hold_pct"])) for r in flows if r["foreign_hold_pct"] is not None]
+    rows.append(_row("supply_demand", "foreign_hold_pct", holds[-1][1] if holds else None, "%", "외국인 보유율"))
+    chg = holds[-1][1] - holds[-21][1] if len(holds) >= 21 else None
+    rows.append(_row("supply_demand", "foreign_hold_chg_20d", chg, "%p", "외국인 보유율 20거래일 변화"))
+    return rows
+
+
+def lending_rows(lend: list[dict] | None, shares) -> list[dict]:
+    """대차잔고 (core.stock_lending_daily, 오름차순). 공매도 압력의 대용 지표. 국내 종목만."""
+    if lend is None:
+        return []
+    note = "금융위원회 주식대차거래정보"
+    bal = [(r["trade_date"], _f(r["balance_qty"])) for r in lend if r["balance_qty"] is not None]
+    last = bal[-1][1] if bal else None
+    chg = _div(last, bal[-21][1]) - 1 if len(bal) >= 21 and bal[-21][1] else None
+    return [
+        _row("supply_demand", "lending_balance_to_shares", _div(last, shares), "ratio",
+             f"대차잔고 주식수 / 발행주식수 ({bal[-1][0]}). {note}" if bal else "대차 데이터 없음"),
+        _row("supply_demand", "lending_balance_chg_20d", chg, "ratio", f"대차잔고 주식수 20거래일 변화율. {note}"),
+    ]
+
+
 def compute_features(snap: dict, prices: list[dict], quarters: list[dict], macro: dict, peers: dict,
-                     attention: dict | None = None) -> list[dict]:
-    """snap: v_valuation + v_ttm 병합 행. prices: [{trade_date, close, volume}] 오름차순."""
+                     attention: dict | None = None, flows: list[dict] | None = None,
+                     lend: list[dict] | None = None) -> list[dict]:
+    """snap: v_valuation + v_ttm 병합 행. prices: [{trade_date, close, volume}] 오름차순.
+    flows·lend: 국내 종목의 투자자별 순매수·대차거래 (오름차순, 해외는 None)."""
     rows = []
     closes = [_f(p["close"]) for p in prices if p["close"] is not None]
     vols = [_f(p["volume"]) for p in prices]
@@ -306,7 +351,7 @@ def compute_features(snap: dict, prices: list[dict], quarters: list[dict], macro
         v = _f(snap.get("op_margin_ttm" if key == "op_margin_ttm" else "roe_ttm"))
         rows.append(_row("fundamentals", feat, (v - m) if (m is not None and v is not None) else None, "ratio_diff", "비교군 중앙값과의 차이"))
 
-    # 수급 (시세·거래량 기반. 투자자별 매매·공매도 데이터는 아직 미수집)
+    # 수급 (시세·거래량 기반 + 국내 투자자별 순매수·대차잔고. KRX 공매도 통계는 로그인 필요라 대차로 대신)
     v20, v60 = avg(vols[-20:]), avg(vols[-60:])
     notional = [c * v for c, v in zip(closes[-20:], vols[-20:]) if c is not None and v is not None]
     hi, lo = (max(closes[-250:]), min(closes[-250:])) if closes else (None, None)
@@ -315,7 +360,8 @@ def compute_features(snap: dict, prices: list[dict], quarters: list[dict], macro
     rows.append(_row("supply_demand", "return_20d", pct_return(closes, 20), "ratio"))
     rows.append(_row("supply_demand", "return_60d", pct_return(closes, 60), "ratio"))
     rows.append(_row("supply_demand", "position_in_52w_range", _div(closes[-1] - lo, hi - lo) if closes and hi != lo else None, "ratio", "0=52주 저가, 1=52주 고가"))
-    rows.append(_row("supply_demand", "investor_flows", None, None, "투자자별 매매·공매도·대차 데이터 미수집 (로그인 필요한 소스뿐이라 제외)"))
+    rows += flow_rows(flows)
+    rows += lending_rows(lend, snap.get("shares_outstanding"))
     rows += attention_rows(attention)
 
     # 거시 (시장 공통)

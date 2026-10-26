@@ -235,6 +235,59 @@ def upsert_youtube_videos(conn, company_id: int, query: str, videos: list[dict],
     return len(params)
 
 
+def upsert_investor_flows(conn, company_id: int, rows: list[dict], source: str) -> int:
+    sql = (
+        "INSERT INTO core.investor_flow_daily (company_id, trade_date, foreign_net_qty, institution_net_qty, "
+        "individual_net_qty, foreign_hold_pct, volume, source) VALUES (%(company_id)s, %(trade_date)s, "
+        "%(foreign_net_qty)s, %(institution_net_qty)s, %(individual_net_qty)s, %(foreign_hold_pct)s, %(volume)s, "
+        "%(source)s) ON CONFLICT (company_id, trade_date) DO UPDATE SET foreign_net_qty=EXCLUDED.foreign_net_qty, "
+        "institution_net_qty=EXCLUDED.institution_net_qty, individual_net_qty=EXCLUDED.individual_net_qty, "
+        "foreign_hold_pct=EXCLUDED.foreign_hold_pct, volume=EXCLUDED.volume, source=EXCLUDED.source, collected_at=now()"
+    )
+    params = [{**r, "company_id": company_id, "source": source} for r in rows]
+    with conn.cursor() as cur:
+        cur.executemany(sql, params)
+    conn.commit()
+    return len(params)
+
+
+def upsert_lending(conn, company_id: int, rows: list[dict], source: str) -> int:
+    sql = (
+        "INSERT INTO core.stock_lending_daily (company_id, trade_date, lent_qty, repaid_qty, balance_qty, balance_amt, "
+        "source) VALUES (%(company_id)s, %(trade_date)s, %(lent_qty)s, %(repaid_qty)s, %(balance_qty)s, "
+        "%(balance_amt)s, %(source)s) ON CONFLICT (company_id, trade_date) DO UPDATE SET lent_qty=EXCLUDED.lent_qty, "
+        "repaid_qty=EXCLUDED.repaid_qty, balance_qty=EXCLUDED.balance_qty, balance_amt=EXCLUDED.balance_amt, "
+        "source=EXCLUDED.source, collected_at=now()"
+    )
+    params = [{**r, "company_id": company_id, "source": source} for r in rows]
+    with conn.cursor() as cur:
+        cur.executemany(sql, params)
+    conn.commit()
+    return len(params)
+
+
+def fetch_lending(conn, company_id: int, n: int = 60) -> list[dict]:
+    """최근 n 거래일 대차거래 (오름차순)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trade_date, lent_qty, repaid_qty, balance_qty, balance_amt FROM core.stock_lending_daily "
+            "WHERE company_id = %s ORDER BY trade_date DESC LIMIT %s", [company_id, n])
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    return rows[::-1]
+
+
+def fetch_investor_flows(conn, company_id: int, n: int = 60) -> list[dict]:
+    """최근 n 거래일 투자자별 순매수 (오름차순)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT trade_date, foreign_net_qty, institution_net_qty, individual_net_qty, foreign_hold_pct, volume "
+            "FROM core.investor_flow_daily WHERE company_id = %s ORDER BY trade_date DESC LIMIT %s", [company_id, n])
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    return rows[::-1]
+
+
 def fetch_reactions(conn, company_id: int, since) -> list[dict]:
     """[{source, published_at, score}] 뉴스·블로그·카페글 (점수 없으면 score=None)."""
     with conn.cursor() as cur:
@@ -486,7 +539,7 @@ def market_caps(conn) -> dict[int, float]:
 def fetch_snapshots(conn) -> dict:
     """v_valuation + v_ttm 병합: {(market, ticker): {...}}"""
     sql = (
-        "SELECT v.market, v.ticker, c.company_id, v.close, v.market_cap, v.fiscal_year, v.fin_currency, "
+        "SELECT v.market, v.ticker, c.company_id, v.close, v.market_cap, v.shares_outstanding, v.fiscal_year, v.fin_currency, "
         "v.per AS per_annual, v.pbr AS pbr_annual, v.op_margin AS op_margin_annual, v.roe AS roe_annual, "
         "v.debt_ratio AS debt_ratio_annual, v.revenue AS revenue_annual, v.net_income AS net_income_annual, "
         "v.equity AS equity_annual, t.ttm_end, t.revenue_ttm, t.operating_income_ttm, t.net_income_ttm, "

@@ -38,6 +38,8 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 검색 관심도 | NAVER API HUB 검색어 트렌드 (구 네이버 데이터랩) | `core.search_trend` |
 | 해외 영문 뉴스 | Finnhub `company-news` | `rag.document` (`finnhub_news`) |
 | 유튜브 공개 영상·댓글 | YouTube Data API v3 (`search`, `videos`, `commentThreads`, API 키만) | `core.youtube_video`, `rag.document` (`youtube_comment`) |
+| 국내 투자자별 순매수 (외국인·기관·개인, 수량), 외국인 보유율 | 네이버 증권 모바일 공개 API (`m.stock.naver.com/api/stock/{종목}/trend`, 비공식·로그인 불필요) | `core.investor_flow_daily` |
+| 코스피 종목별 대차거래·대차잔고 (공매도 대용) | 금융위원회 주식대차거래정보 (공공데이터포털 `GetCMStckLnbInfoService`, 공공누리 4유형) | `core.stock_lending_daily` |
 
 감성 점수(`core.doc_sentiment`), 분기 단독 값·TTM(`core.financial_quarter`, `core.v_ttm`), Peer Group, 5개 관점 지표(`core.feature_snapshot`)는
 위 테이블에서 DB 안에서 계산한 파생 값입니다. 각 출처의 이용 조건은 제공 기관 약관을 따릅니다.
@@ -54,7 +56,8 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 해외 시세·지수 | yfinance (비공식, 개발·연구용) |
 | 제외 | 토스증권 Open API, 한국투자증권 KIS, 로그인 필요한 소스(KRX 로그인 기반 pykrx 등) |
 | 관세청 수출입 | 반도체 HS 854232·854231 월별 수출입 금액 (`collect-customs`, 2026-10-26 활용신청 승인 후 자동 수집에 추가) |
-| 보류 | 국내 투자자별 수급·공매도, RAG 임베딩 적재(`embed-docs`) |
+| 수급·공매도 | 투자자별 순매수는 네이버 증권 공개 API(종목당 하루 1회), 공매도는 대차잔고(금융위원회 주식대차거래정보)로 대신. KRX 공매도·투자자별 통계는 2025-12-27부터 로그인 필요라 제외 (2026-10-26) |
+| 보류 | RAG 임베딩 적재(`embed-docs`) |
 | 뉴스 | 네이버 검색 API — 제목·요약·링크·게시일만 (본문 미수집) |
 | 유튜브 | YouTube Data API 공개 데이터만 (API 키, OAuth 사용자 데이터 없음) — 영상 제목·통계, 공개 댓글 본문·작성일 (작성자 미저장) |
 | 자동화 | 매일 자동 갱신(`daily-update`) + 종목별 검색 관심도 |
@@ -171,7 +174,8 @@ data = refresh_ticker("KR", "005930")   # 종목 클릭 시 오늘 여론 즉시
 
 ### 그 밖에
 - `yfinance` 는 비공식 라이브러리입니다. 개발·연구용이며 기획서 부록에 출처·이용조건을 적으세요.
-- 국내 투자자별 수급·공매도는 계정 로그인이 필요한 소스뿐이라 수집하지 않습니다 (`investor_flows` = 미수집 표시).
+- 국내 투자자별 순매수는 네이버 증권 비공식 API 라 금액이 아니라 수량이고, 연기금 등 세부 기관 구분이 없습니다. 예고 없이 바뀔 수 있어 응답 구조가 다르면 실패로 남깁니다.
+- 공매도 거래량·잔고 자체는 KRX 로그인이 필요해 받지 않고, 대차잔고(`lending_balance_to_shares`, `lending_balance_chg_20d`)로 대신합니다. 대차거래 자료는 공공누리 4유형(출처표시·상업적 이용금지·변경금지)입니다.
 - 공시 분류(`event_type`)는 보고서명 키워드 규칙입니다 (`collectors/dart.py` 의 `EVENT_KEYWORDS`).
 - FCF 계산용 현금흐름표 계정 확인:
   `SELECT DISTINCT account_id, account_nm FROM core.financial_fact WHERE sj_div = 'CF' AND source = 'dart' ORDER BY 1;`
