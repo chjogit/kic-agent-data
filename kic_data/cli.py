@@ -29,6 +29,7 @@
   embed-docs       청크가 없는 문서를 청킹·임베딩해 rag.chunk 에 적재
   collect-etf      국내 ETF 시세·NAV (금융위원회 증권상품시세정보, universe.py 의 ETF_UNIVERSE)
   collect-finnhub  해외 종목 영문 뉴스 (Finnhub, FINNHUB_API_KEY 있을 때만)
+  collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-kr-prices / collect-us-prices / collect-dart / collect-sec / collect-macro
   tick             시간표(kic_data/jobs.py)상 차례가 된 작업을 실행 (GitHub Actions 매시간 실행용)
 
@@ -42,7 +43,7 @@ import sys
 from datetime import date, timedelta
 
 from . import db, features, pulse, quarterly, rag, sentiment, status
-from .collectors import community, customs, dart, etf, finnhub, fsc, indices, macro, news, sec, trends, us_prices
+from .collectors import community, customs, dart, etf, finnhub, fsc, indices, macro, news, sec, trends, us_prices, youtube
 from .config import env
 from .http_util import make_session
 from .universe import ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_UNIVERSE
@@ -356,20 +357,22 @@ def cmd_disclosures(args) -> int:
 
 def cmd_customs(args) -> int:
     s = make_session()
-    start = date(int(args.from_ym[:4]), int(args.from_ym[4:6]), 1)
+    from_ym = str(args.from_ym)
+    start = date(int(from_ym[:4]), int(from_ym[4:6]), 1)
     today = date.today()
     with db.connect() as conn:
         for hs in [h.strip() for h in args.hs.split(",") if h.strip()]:
             exp_rows, imp_rows = {}, {}
-            for a, b in date_windows(start, today, 360):
-                for d, exp, imp in customs.fetch_trade(s, hs, a.strftime("%Y%m"), b.strftime("%Y%m")):
+            for a, b in customs.month_windows(start, today):  # 1회 조회 1년 이내
+                for d, exp, imp in customs.fetch_trade(s, hs, a, b):
                     exp_rows[d], imp_rows[d] = exp, imp
             label = customs.HS_NAMES.get(hs, f"HS {hs}")
             n1 = db.upsert_macro(conn, f"KCS_EXP_{hs}_USD", f"{label} 수출금액(USD)", "kcs", "M", sorted(exp_rows.items()))
             n2 = db.upsert_macro(conn, f"KCS_IMP_{hs}_USD", f"{label} 수입금액(USD)", "kcs", "M", sorted(imp_rows.items()))
-            _ok(f"HS {hs}", f"수출 {n1}개월 / 수입 {n2}개월")
-            if n1 == 0:
-                print("       (0건: 활용신청 승인·엔드포인트·HS 코드를 확인하세요)")
+            if n1 == 0:  # 응답은 정상인데 행이 없으면 실패로 남겨 자동 실행 요약에서 보이게 (1회 작업은 6시간 뒤 재시도)
+                _fail(f"HS {hs}", "0건: 활용신청 승인·엔드포인트·HS 코드를 확인하세요")
+            else:
+                _ok(f"HS {hs}", f"수출 {n1}개월 / 수입 {n2}개월")
     return 0
 
 
@@ -532,6 +535,38 @@ def cmd_finnhub(args) -> int:
                 bad += 1
                 continue
             _ok(f"US:{ticker}", f"{db.upsert_documents(conn, cid, 'finnhub_news', rows)}건")
+    return 1 if bad else 0
+
+
+def cmd_youtube(args) -> int:
+    """유튜브 공개 데이터: 종목별 최근 영상(통계)과 공개 댓글. 키가 없으면 건너뜁니다."""
+    if not env("YOUTUBE_API_KEY"):
+        print("[SKIP] YOUTUBE_API_KEY 없음 → 유튜브 건너뜀")
+        return 0
+    s = make_session()
+    since = date.today() - timedelta(days=args.days)
+    bad = 0
+    with db.connect() as conn:
+        for market in ("KR", "US"):
+            for cid, ticker, name, *_ in db.list_companies(conn, market):
+                term, must = news.terms_for(market, ticker, name)
+                query = f"{term} 주가"
+                try:
+                    videos = youtube.search_videos(s, query, since, args.videos)
+                    videos = [v for v in videos if any(m.lower() in f"{v['title']} {v['summary']}".lower() for m in must)]
+                    stats = youtube.video_stats(s, [v["video_id"] for v in videos])
+                    db.upsert_youtube_videos(conn, cid, query, videos, stats)
+                    n_comments = 0
+                    for v in videos:
+                        if (stats.get(v["video_id"]) or {}).get("comment_count") == 0:
+                            continue
+                        rows = youtube.video_comments(s, v["video_id"], args.comments)
+                        n_comments += db.upsert_documents(conn, cid, "youtube_comment", rows)
+                except RuntimeError as exc:
+                    _fail(f"{market}:{ticker}", str(exc))
+                    bad += 1
+                    continue
+                _ok(f"{market}:{ticker}", f"영상 {len(videos)}개, 댓글 {n_comments}건 (검색어 '{query}')")
     return 1 if bad else 0
 
 
@@ -844,6 +879,9 @@ def main(argv=None) -> int:
     a.set_defaults(fn=cmd_tick)
     a = sub.add_parser("collect-etf"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_etf)
     a = sub.add_parser("collect-finnhub"); a.add_argument("--days", type=int, default=7); a.set_defaults(fn=cmd_finnhub)
+    a = sub.add_parser("collect-youtube"); a.add_argument("--days", type=int, default=7)
+    a.add_argument("--videos", type=int, default=5); a.add_argument("--comments", type=int, default=100)
+    a.set_defaults(fn=cmd_youtube)
     args = p.parse_args(argv)
     try:
         return args.fn(args)

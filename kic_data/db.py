@@ -192,7 +192,7 @@ def fetch_search_trend(conn, subject: str, days: int = 120) -> list[tuple]:
         return cur.fetchall()
 
 
-SENTIMENT_SOURCES = ("naver_news", "naver_blog", "naver_cafe")
+SENTIMENT_SOURCES = ("naver_news", "naver_blog", "naver_cafe", "youtube_comment")
 
 
 def docs_without_sentiment(conn, method: str, limit: int | None = None) -> list[tuple]:
@@ -216,6 +216,23 @@ def upsert_sentiment(conn, rows: list[tuple]) -> int:
             "method=EXCLUDED.method, scored_at=now()", rows)
     conn.commit()
     return len(rows)
+
+
+def upsert_youtube_videos(conn, company_id: int, query: str, videos: list[dict], stats: dict[str, dict]) -> int:
+    """core.youtube_video 갱신 (조회수 등 통계는 다시 수집할 때마다 최신 값으로)."""
+    sql = (
+        "INSERT INTO core.youtube_video (video_id, company_id, query, title, channel, published_at, "
+        "view_count, like_count, comment_count) VALUES (%(video_id)s, %(company_id)s, %(query)s, %(title)s, "
+        "%(channel)s, %(published_at)s, %(view_count)s, %(like_count)s, %(comment_count)s) "
+        "ON CONFLICT (video_id) DO UPDATE SET title=EXCLUDED.title, view_count=EXCLUDED.view_count, "
+        "like_count=EXCLUDED.like_count, comment_count=EXCLUDED.comment_count, collected_at=now()"
+    )
+    empty = {"view_count": None, "like_count": None, "comment_count": None}
+    params = [{**v, **stats.get(v["video_id"], empty), "company_id": company_id, "query": query} for v in videos]
+    with conn.cursor() as cur:
+        cur.executemany(sql, params)
+    conn.commit()
+    return len(params)
 
 
 def fetch_reactions(conn, company_id: int, since) -> list[dict]:
