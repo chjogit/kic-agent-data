@@ -450,6 +450,9 @@ def _summary(log: str, status: str, tickers: str | None, complete: bool) -> str:
     return " · ".join(parts)
 
 
+BACKFILL_SHARE = 0.5  # 과거분이 예산을 다 쓰면 매시간 시세·공시가 밀리므로 절반까지만
+
+
 def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 280.0, only: str | None = None,
          commands=None, getenv=None, clock=time.monotonic, universe_for=None) -> dict:
     """차례가 된 작업을 시간 예산 안에서 순서대로 실행합니다."""
@@ -467,7 +470,8 @@ def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 2
             continue
         elapsed = clock() - t0
         expected = float((st or {}).get("last_seconds") or 20) * 1.2
-        if elapsed > budget or elapsed + expected > hard_limit:
+        limit = budget * BACKFILL_SHARE if job.group.startswith("과거분") else budget
+        if elapsed > limit or elapsed + expected > hard_limit:
             waiting.append(job.name)
             continue
         universe = universe_for(job) if universe_for else None
@@ -478,7 +482,7 @@ def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 2
             if not res.get("more"):
                 break
             elapsed = clock() - t0
-            if elapsed + max(res.get("seconds") or 0, 5) * 1.2 > min(budget, hard_limit):
+            if elapsed + max(res.get("seconds") or 0, 5) * 1.2 > min(limit, hard_limit):
                 waiting.append(job.name)
                 break
             reason = "이어서"

@@ -127,6 +127,27 @@ def test_tick_respects_budget(monkeypatch):
     assert len(calls) == 2 and res["waiting"] == ["j2", "j3", "j4"]
 
 
+def test_tick_backfill_leaves_room_for_regular(monkeypatch):
+    calls = []
+    fake = [jobs.Job("bf", "bf", "cmd_bf", every=jobs.ONCE, split=("KR",), chunk=1, group="과거분(1회)"),
+            jobs.Job("hourly", "hourly", "cmd_x")]
+    monkeypatch.setattr(jobs, "JOBS", fake)
+    clock = {"t": 0.0}
+
+    def step(name):
+        def fn(ns):
+            calls.append(name)
+            clock["t"] += 100
+        return fn
+
+    st = MemState()
+    keys = [("KR", str(i)) for i in range(50)]
+    res = jobs.tick(st, budget=1000, hard_limit=1300, commands=SimpleNamespace(cmd_bf=step("bf"), cmd_x=step("x")),
+                    getenv=env_all, clock=lambda: clock["t"], universe_for=lambda j: keys if j.split else None)
+    # 과거분은 예산 절반(500초) 안에서만 이어 가고, 매시간 작업은 그 뒤에 실행
+    assert calls.count("bf") == 5 and calls[-1] == "x" and res["waiting"] == ["bf"]
+
+
 def test_job_table_is_consistent():
     from kic_data import cli
 
