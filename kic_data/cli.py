@@ -29,6 +29,7 @@
   embed-docs       청크가 없는 문서를 청킹·임베딩해 rag.chunk 에 적재
   collect-etf      국내 ETF 시세·NAV (금융위원회 증권상품시세정보, universe.py 의 ETF_UNIVERSE)
   collect-finnhub  해외 종목 영문 뉴스 (Finnhub, FINNHUB_API_KEY 있을 때만)
+  collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-kr-prices / collect-us-prices / collect-dart / collect-sec / collect-macro
   tick             시간표(kic_data/jobs.py)상 차례가 된 작업을 실행 (GitHub Actions 매시간 실행용)
 
@@ -42,7 +43,7 @@ import sys
 from datetime import date, timedelta
 
 from . import db, features, pulse, quarterly, rag, sentiment, status
-from .collectors import community, customs, dart, etf, finnhub, fsc, indices, macro, news, sec, trends, us_prices
+from .collectors import community, customs, dart, etf, finnhub, fsc, indices, macro, news, sec, trends, us_prices, youtube
 from .config import env
 from .http_util import make_session
 from .universe import ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_UNIVERSE
@@ -537,6 +538,38 @@ def cmd_finnhub(args) -> int:
     return 1 if bad else 0
 
 
+def cmd_youtube(args) -> int:
+    """유튜브 공개 데이터: 종목별 최근 영상(통계)과 공개 댓글. 키가 없으면 건너뜁니다."""
+    if not env("YOUTUBE_API_KEY"):
+        print("[SKIP] YOUTUBE_API_KEY 없음 → 유튜브 건너뜀")
+        return 0
+    s = make_session()
+    since = date.today() - timedelta(days=args.days)
+    bad = 0
+    with db.connect() as conn:
+        for market in ("KR", "US"):
+            for cid, ticker, name, *_ in db.list_companies(conn, market):
+                term, must = news.terms_for(market, ticker, name)
+                query = f"{term} 주가"
+                try:
+                    videos = youtube.search_videos(s, query, since, args.videos)
+                    videos = [v for v in videos if any(m.lower() in f"{v['title']} {v['summary']}".lower() for m in must)]
+                    stats = youtube.video_stats(s, [v["video_id"] for v in videos])
+                    db.upsert_youtube_videos(conn, cid, query, videos, stats)
+                    n_comments = 0
+                    for v in videos:
+                        if (stats.get(v["video_id"]) or {}).get("comment_count") == 0:
+                            continue
+                        rows = youtube.video_comments(s, v["video_id"], args.comments)
+                        n_comments += db.upsert_documents(conn, cid, "youtube_comment", rows)
+                except RuntimeError as exc:
+                    _fail(f"{market}:{ticker}", str(exc))
+                    bad += 1
+                    continue
+                _ok(f"{market}:{ticker}", f"영상 {len(videos)}개, 댓글 {n_comments}건 (검색어 '{query}')")
+    return 1 if bad else 0
+
+
 def cmd_company_info(args) -> int:
     """업종코드(DART KSIC / SEC SIC)와 발행주식수(국내 FSC 상장주식수 / 해외 SEC 표지)를 core.company 에 채웁니다."""
     s = make_session()
@@ -846,6 +879,9 @@ def main(argv=None) -> int:
     a.set_defaults(fn=cmd_tick)
     a = sub.add_parser("collect-etf"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_etf)
     a = sub.add_parser("collect-finnhub"); a.add_argument("--days", type=int, default=7); a.set_defaults(fn=cmd_finnhub)
+    a = sub.add_parser("collect-youtube"); a.add_argument("--days", type=int, default=7)
+    a.add_argument("--videos", type=int, default=5); a.add_argument("--comments", type=int, default=100)
+    a.set_defaults(fn=cmd_youtube)
     args = p.parse_args(argv)
     try:
         return args.fn(args)

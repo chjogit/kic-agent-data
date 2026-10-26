@@ -238,6 +238,7 @@ def attention_rows(attention: dict | None) -> list[dict]:
     crowd_7, n_c7 = tone(crowd, 0, 7, weighted=True)
     crowd_prev, _ = tone(crowd, 7, 30)
     news_7, n_n7 = tone(("naver_news",), 0, 7, weighted=True)
+    yt_7, n_y7 = tone(("youtube_comment",), 0, 7, weighted=True)
     all_7, _ = tone(dated, 0, 7, weighted=True)
     day_1, n_d1 = tone(dated, 0, 1, min_n=3)
     tone_note = "키워드 기반 톤 -1(부정)~+1(긍정)"
@@ -253,6 +254,7 @@ def attention_rows(attention: dict | None) -> list[dict]:
         _row("supply_demand", "crowd_sentiment_chg", (crowd_7 - crowd_prev) if None not in (crowd_7, crowd_prev) else None,
              "score_diff", "최근 7일(가중) − 직전 8~30일. +면 투자자 분위기 개선"),
         _row("supply_demand", "news_sentiment_7d", news_7, "score", f"뉴스 {n_n7}건. {tone_note}. {w_note}"),
+        _row("supply_demand", "youtube_sentiment_7d", yt_7, "score", f"유튜브 공개 댓글 {n_y7}건. {tone_note}. {w_note}"),
         _row("supply_demand", "crowd_posts_7d_vs_30d", crowd_ratio, "x",
              "블로그·카페 새 글 최근 7일 일평균 / 이전 일평균. 1보다 크면 언급 증가" + acc(n_c, 14)),
         _row("supply_demand", "search_attention_7d_vs_90d", spike, "x", f"최근 7일 / 직전 90일 평균. 1보다 크면 관심 증가. {note}"),

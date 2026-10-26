@@ -79,7 +79,7 @@ HS_SEMI = "854232,854231"  # 반도체 메모리, 프로세서·컨트롤러
 # 재무는 DART 호출이 많아(국내 종목 1개 5년치 ≈ 35초) 자주 도는 수집이 밀리지 않게 뒤에 둡니다.
 JOBS: list[Job] = [
     # 준비 (매일 1회: 종목을 바꾸면 다음 날 자동 반영, 급하면 대시보드에서 수동 실행)
-    Job("apply-schema", "DB 스키마 적용", "cmd_apply_schema", every=DAY, needs=DB, group="준비"),
+    Job("apply-schema", "DB 스키마 적용", "cmd_apply_schema", needs=DB, group="준비"),  # 매 실행 (몇 초, 새 sql 파일이 바로 반영되게)
     Job("seed-companies", "종목 등록 (universe.py)", "cmd_seed", every=DAY, needs=DB, group="준비"),
     Job("sync-dart-codes", "DART 고유번호 연결", "cmd_sync_dart", every=DAY, needs=DB + ("DART_API_KEY",), group="준비"),
     Job("company-info", "업종코드·발행주식수", "cmd_company_info", every=DAY,
@@ -119,6 +119,8 @@ JOBS: list[Job] = [
     Job("community", "블로그·카페 반응", "cmd_community", {"days": 2, "sources": "naver_blog,naver_cafe", "pages": 1},
         needs=DB + NAVER, split=("KR", "US"), chunk=12),
     Job("trends", "검색 관심도", "cmd_trends", {"days": 14}, needs=DB, needs_any=("NCP_APIHUB_KEY_ID", "NAVER_CLIENT_ID")),
+    Job("youtube", "유튜브 공개 영상·댓글", "cmd_youtube", {"days": 7, "videos": 5, "comments": 100}, every=DAY,
+        needs=DB + ("YOUTUBE_API_KEY",), split=("KR", "US"), chunk=12),  # 검색 1회 100단위라 하루 1회 (할당량 10,000)
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),

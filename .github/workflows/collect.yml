@@ -43,6 +43,7 @@ jobs:
           ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
           if [ -z "$DATABASE_URL" ]; then echo "DATABASE_URL 시크릿이 없습니다"; exit 1; fi
