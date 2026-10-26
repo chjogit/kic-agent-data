@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["sin1"],
+  "functions": {
+    "main.py": {
+      "maxDuration": 300,
+      "includeFiles": "sql/**"
+    }
+  },
+  "crons": [
+    { "path": "/api/cron/tick", "schedule": "0 21 * * *" }
+  ]
+}

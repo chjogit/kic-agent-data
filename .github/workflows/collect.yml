@@ -1,0 +1,49 @@
+# 2시간마다 데이터 수집 (GitHub Actions 만으로 실행, 서버 불필요)
+# 저장소 Settings → Secrets and variables → Actions → New repository secret 에 키를 넣으세요 (docs/AUTO_RUN.md).
+# 없는 키는 그 작업만 '건너뜀' 으로 처리되므로 DATABASE_URL 만 있어도 시작할 수 있습니다.
+#
+# 무료 사용량: 공개(public) 저장소는 무제한, 비공개(private)는 월 2,000분입니다.
+#   매시간 1회 ≈ 3~5분 → 월 2,200~3,600분이라 비공개 저장소는 한도를 넘을 수 있습니다.
+#   비공개로 쓰려면 아래 cron 을 2시간 간격("7 */2 * * *")으로 바꾸세요 (월 약 1,100~1,800분).
+name: kic-collect
+on:
+  schedule:
+    - cron: "7 */2 * * *"   # 2시간마다 7분 (비공개 저장소 무료 한도 월 2,000분 안). 공개 저장소면 "7 * * * *" 로 매시간 가능
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "특정 묶음/작업만 (예: 준비, 과거분(1회), news). 비우면 전체"
+        required: false
+        default: ""
+concurrency:
+  group: kic-collect
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 수집 실행
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FSC_API_KEY: ${{ secrets.FSC_API_KEY }}
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          NCP_APIHUB_KEY_ID: ${{ secrets.NCP_APIHUB_KEY_ID }}
+          NCP_APIHUB_KEY: ${{ secrets.NCP_APIHUB_KEY }}
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          if [ -z "$DATABASE_URL" ]; then echo "DATABASE_URL 시크릿이 없습니다"; exit 1; fi
+          python -m kic_data.cli tick --budget 1200 --summary "$GITHUB_STEP_SUMMARY" ${{ github.event.inputs.only && format('--only "{0}"', github.event.inputs.only) || '' }}

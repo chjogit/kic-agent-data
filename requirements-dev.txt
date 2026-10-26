@@ -1,0 +1,5 @@
+# 로컬 개발·테스트용 (Vercel 배포에는 requirements.txt 만 설치됩니다)
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27
+uvicorn>=0.30

@@ -1,0 +1,10 @@
+.venv/
+logs/
+tests/
+scripts/
+features.json
+status.json
+requirements-rag.txt
+requirements-sentiment.txt
+requirements-dev.txt
+.env

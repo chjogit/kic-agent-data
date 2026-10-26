@@ -1,0 +1,67 @@
+# 자동 수집: GitHub Actions (서버 없이, 무료) — 2시간마다, 비공개 저장소
+
+GitHub 저장소에 코드를 올려 두면 GitHub 가 2시간마다 수집을 대신 실행합니다. PC 를 켜 둘 필요도, Vercel 같은 서버도 필요 없습니다.
+수집 결과는 지금처럼 Neon DB 에 쌓입니다.
+
+## 1. 동작 방식
+
+- `.github/workflows/collect.yml` 이 2시간마다(짝수 시 7분, UTC 기준) `python -m kic_data.cli tick` 을 실행합니다.
+- `tick` 은 `kic_data/jobs.py` 의 시간표에서 **차례가 된 작업만** 실행합니다 (한 번 실행에 최대 20분).
+
+| 묶음 | 주기 | 작업 |
+|---|---|---|
+| 준비 | 매일 | DB 스키마 적용, 종목 등록, DART 고유번호, 업종코드·발행주식수 |
+| 과거분 | 1회 | 국내·해외 시세 5년, 지수 5년, ETF 5년, 거시 5년, 공시 1년, 뉴스·블로그·카페 30일, 검색 관심도 1년 |
+| 재무 | 매일 | DART·SEC 연간/분기 재무, 분기 단독 값·TTM, Peer Group |
+| 수집 | 매 실행(2시간) | 국내·해외 시세, 지수, ETF, 거시·업황, 공시, 네이버 뉴스, Finnhub 영문 뉴스, 블로그·카페, 검색 관심도, 감성 점수, 언급량 스냅샷, 5개 관점 지표 재계산 |
+
+- 키가 없는 작업은 실패가 아니라 **'건너뜀'** 으로 기록하고, 키를 넣으면 다음 실행부터 돌아갑니다.
+- 작업 상태와 실행 기록은 DB(`ops.job_state`, `ops.job_run`)에 남고, 실행마다 **Actions 실행 요약 화면에 상태표**가 나옵니다.
+- 시세는 원천이 하루 한 번 갱신되므로(FSC 는 다음 영업일 13시 이후) 새 값은 하루 한 번만 들어옵니다.
+  자주 돌릴수록 의미가 있는 것은 뉴스·블로그·카페·언급량·공시입니다.
+
+## 2. 무료 사용량
+
+| 저장소 | Actions 무료 시간 | 매시간 실행 |
+|---|---|---|
+| 공개(public) | 무제한 | 그대로 가능 |
+| 비공개(private) | 월 2,000분 | 1회 3~5분 × 월 720회 = 2,200~3,600분 → **한도 초과 가능** |
+
+- 이 저장소는 **비공개 + 2시간 간격**(`"7 */2 * * *"`)으로 설정했습니다: 월 약 1,100~1,800분으로 한도 안입니다.
+- 공개 저장소로 바꾸면 cron 을 `"7 * * * *"` 로 고쳐 매시간 돌릴 수 있습니다.
+- 공개 저장소여도 **키는 Secrets 에 넣으므로 노출되지 않습니다** (`.env` 는 `.gitignore` 에 있어 올라가지 않음). 다만 코드는 누구나 볼 수 있습니다.
+- 사용량은 GitHub → Settings → Billing and plans 에서 확인합니다.
+
+## 3. 설정 순서
+
+1. GitHub 에서 새 저장소를 만들고 이 폴더를 올립니다.
+2. 저장소 **Settings → Secrets and variables → Actions → New repository secret** 에 키를 하나씩 넣습니다.
+
+| 이름 | 필수 | 설명 |
+|---|---|---|
+| `DATABASE_URL` | 필수 | Neon 연결 문자열. PC 의 `.env` 에 있는 값을 그대로 붙여 넣으면 됩니다 (풀러 주소도 동작) |
+| `FSC_API_KEY` | 권장 | 공공데이터포털 일반 인증키(Decoding). 주식시세정보 + 증권상품시세정보(ETF) 활용신청 |
+| `DART_API_KEY` | 권장 | OpenDART |
+| `SEC_USER_AGENT` | 권장 | `이름 이메일` 형식 (예: `KIC Team team@example.com`) |
+| `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | 권장 | 네이버 개발자센터 검색 API |
+| `NCP_APIHUB_KEY_ID`, `NCP_APIHUB_KEY` | 선택 | NAVER API HUB 검색 트렌드 |
+| `ECOS_API_KEY`, `FRED_API_KEY` | 권장 | 한국은행 ECOS, 미국 FRED |
+| `FINNHUB_API_KEY` | 선택 | finnhub.io 무료 키 (해외 종목 영문 뉴스) |
+
+3. **Actions** 탭 → `kic-collect` → **Run workflow** 로 한 번 실행해 봅니다. 초록색이면 성공이고,
+   실행을 눌러 들어가면 아래쪽 Summary 에 작업별 상태표가 보입니다. 이후에는 2시간마다 자동 실행됩니다.
+4. 과거분(5년치)은 첫 실행 한두 번에 걸쳐 채워집니다 (한 번 실행에 최대 20분).
+
+`Run workflow` 의 `only` 칸에 `준비`, `과거분(1회)`, `news` 처럼 묶음이나 작업 이름을 넣으면 그것만 실행합니다.
+
+## 4. 알아 둘 점
+
+- GitHub 예약 실행은 몇 분에서 수십 분까지 늦어질 수 있고, **저장소에 60일 동안 커밋이 없으면 예약 실행이 멈춥니다**
+  (Actions 탭에서 다시 켜면 됨).
+- GitHub Actions 서버는 미국에 있습니다. 국내 공공 API 가 해외 접속을 막는 경우가 생기면 그 작업만 '일부 실패' 로 남습니다.
+  첫 실행 결과표에서 FSC·DART·ECOS 가 정상인지 확인해 주세요.
+- yfinance(해외 시세·지수)는 비공식이라 일시 차단이 날 수 있고, 실패한 종목은 다음 실행에서 다시 시도합니다.
+- **PC 의 작업 스케줄러(`kic_daily_update`, 장중 펄스 `pulse.bat`)는 GitHub Actions 첫 실행이 성공하면 꺼 주세요.**
+  같은 DB 에 같은 데이터를 쓰므로 하나만 돌리면 됩니다. 끄기: `schtasks /Change /TN "작업이름" /DISABLE`
+- 대시보드 화면이 필요하면 PC 에서 `.env` 를 채우고 `pip install -r requirements-dev.txt` → `uvicorn main:app` →
+  http://127.0.0.1:8000 을 열면 같은 DB 의 작업 상태를 볼 수 있습니다. 서버에 올리고 싶을 때는 `docs/DEPLOY_VERCEL.md` 참고.

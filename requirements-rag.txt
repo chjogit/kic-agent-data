@@ -1,0 +1,2 @@
+# RAG 임베딩 단계에서만 필요 (PyTorch 포함, 용량 큼): pip install -r requirements-rag.txt
+sentence-transformers>=3.0

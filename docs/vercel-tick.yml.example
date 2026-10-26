@@ -1,0 +1,29 @@
+# 15분마다 Vercel 의 /api/cron/tick 을 호출합니다 (Vercel Hobby 요금제는 크론이 하루 1회로 제한되기 때문).
+# 저장소 Settings → Secrets and variables → Actions 에 두 값을 넣으세요:
+#   KIC_APP_URL  예) https://kic-agent-data.vercel.app   (끝에 / 없이)
+#   CRON_SECRET  Vercel 환경변수 CRON_SECRET 과 같은 값
+# 주의: GitHub 는 저장소에 60일 동안 활동이 없으면 예약 실행을 멈춥니다 (Actions 탭에서 다시 켜기).
+name: kic-tick
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+concurrency:
+  group: kic-tick
+  cancel-in-progress: false
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Call tick
+        env:
+          URL: ${{ secrets.KIC_APP_URL }}
+          SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$SECRET" ]; then echo "KIC_APP_URL / CRON_SECRET 시크릿이 없습니다"; exit 1; fi
+          code=$(curl -sS -o out.json -w '%{http_code}' --max-time 320 -H "Authorization: Bearer $SECRET" "$URL/api/cron/tick" || echo 000)
+          head -c 4000 out.json || true; echo
+          echo "HTTP $code"
+          # 409 = 이전 tick 이 아직 실행 중 (정상)
+          if [ "$code" != "200" ] && [ "$code" != "409" ]; then exit 1; fi
