@@ -2,6 +2,8 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from kic_data import db, jobs
 from kic_data.collectors import etf, finnhub
 
@@ -148,3 +150,53 @@ def test_parse_etf_and_finnhub():
         {"headline": "dup", "url": "https://x/1", "datetime": 1761400000},
         {"headline": "no url", "url": ""}])
     assert len(news) == 1 and news[0]["published_at"].year == 2025
+
+
+class _FakeConn:
+    def __init__(self, fail=False):
+        self.fail, self.closed, self.commits = fail, False, 0
+
+    def cursor(self):
+        conn = self
+
+        class Cur:
+            description = [("job",)]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, *a):
+                if conn.fail:
+                    import psycopg
+                    raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+
+            def fetchall(self):
+                return []
+
+        return Cur()
+
+    def commit(self):
+        self.commits += 1
+
+    def close(self):
+        self.closed = True
+
+
+def test_dbstate_reconnects_after_dropped_connection():
+    pytest.importorskip("psycopg")
+    dead = _FakeConn(fail=True)
+    fresh = _FakeConn()
+    state = jobs.DbState(dead, connect=lambda: fresh)
+    assert state.all() == {}
+    assert dead.closed and state.conn is fresh and fresh.commits == 1
+
+
+def test_dbstate_without_connect_raises():
+    pytest.importorskip("psycopg")
+    import psycopg
+    state = jobs.DbState(_FakeConn(fail=True))
+    with pytest.raises(psycopg.OperationalError):
+        state.all()

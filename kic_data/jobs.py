@@ -127,55 +127,90 @@ def _now() -> datetime:
 # ---------------------------------------------------------------- 상태 저장소
 
 class DbState:
-    """ops.job_state / ops.job_run (sql/013). 테스트에서는 같은 메서드를 가진 메모리 저장소를 씁니다."""
+    """ops.job_state / ops.job_run (sql/013). 테스트에서는 같은 메서드를 가진 메모리 저장소를 씁니다.
 
-    def __init__(self, conn):
+    긴 작업(과거분 5년치 등)이 도는 동안 이 연결은 쉬고 있어서 Neon 이 끊을 수 있습니다.
+    connect 를 넘기면 끊긴 연결을 다시 열어 한 번 더 시도합니다.
+    """
+
+    def __init__(self, conn, connect: Callable | None = None):
         self.conn = conn
+        self._connect = connect
+
+    def _run(self, fn):
+        try:
+            return fn(self.conn)
+        except Exception as exc:  # noqa: BLE001
+            if self._connect is None or not _is_disconnect(exc, self.conn):
+                raise
+            try:
+                self.conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.conn = self._connect()
+            return fn(self.conn)
 
     def all(self) -> dict[str, dict]:
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT job, cursor, last_status, last_started, last_finished, last_complete, last_seconds, "
-                        "running_since, detail FROM ops.job_state")
-            cols = [d[0] for d in cur.description]
-            return {r[0]: dict(zip(cols, r)) for r in cur.fetchall()}
+        def q(conn):
+            with conn.cursor() as cur:
+                cur.execute("SELECT job, cursor, last_status, last_started, last_finished, last_complete, last_seconds, "
+                            "running_since, detail FROM ops.job_state")
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+            conn.commit()
+            return {r[0]: dict(zip(cols, r)) for r in rows}
+        return self._run(q)
 
     def mark_running(self, job: str, started: datetime) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute("INSERT INTO ops.job_state (job, running_since, last_started) VALUES (%s, %s, %s) "
-                        "ON CONFLICT (job) DO UPDATE SET running_since = EXCLUDED.running_since, "
-                        "last_started = EXCLUDED.last_started", [job, started, started])
-        self.conn.commit()
+        def q(conn):
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO ops.job_state (job, running_since, last_started) VALUES (%s, %s, %s) "
+                            "ON CONFLICT (job) DO UPDATE SET running_since = EXCLUDED.running_since, "
+                            "last_started = EXCLUDED.last_started", [job, started, started])
+            conn.commit()
+        self._run(q)
 
     def finish(self, job: str, *, status: str, cursor: int, complete: bool, seconds: float, detail: str,
                finished: datetime, trigger: str, tickers: str | None, log: str, started: datetime) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "UPDATE ops.job_state SET cursor = %s, last_status = %s, last_finished = %s, "
-                "last_complete = CASE WHEN %s THEN %s ELSE last_complete END, last_seconds = %s, "
-                "running_since = NULL, detail = %s WHERE job = %s",
-                [cursor, status, finished, complete, finished, round(seconds, 1), detail, job])
-            cur.execute(
-                "INSERT INTO ops.job_run (job, trigger, tickers, started_at, finished_at, status, seconds, log) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                [job, trigger, tickers, started, finished, status, round(seconds, 1), log[-LOG_LIMIT:]])
-        self.conn.commit()
+        def q(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE ops.job_state SET cursor = %s, last_status = %s, last_finished = %s, "
+                    "last_complete = CASE WHEN %s THEN %s ELSE last_complete END, last_seconds = %s, "
+                    "running_since = NULL, detail = %s WHERE job = %s",
+                    [cursor, status, finished, complete, finished, round(seconds, 1), detail, job])
+                cur.execute(
+                    "INSERT INTO ops.job_run (job, trigger, tickers, started_at, finished_at, status, seconds, log) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [job, trigger, tickers, started, finished, status, round(seconds, 1), log[-LOG_LIMIT:]])
+            conn.commit()
+        self._run(q)
 
     def reset(self, job: str) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute("UPDATE ops.job_state SET cursor = 0, last_complete = NULL, running_since = NULL WHERE job = %s", [job])
-        self.conn.commit()
+        def q(conn):
+            with conn.cursor() as cur:
+                cur.execute("UPDATE ops.job_state SET cursor = 0, last_complete = NULL, running_since = NULL "
+                            "WHERE job = %s", [job])
+            conn.commit()
+        self._run(q)
 
     def prune(self, days: int = 14) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute("DELETE FROM ops.job_run WHERE started_at < now() - make_interval(days => %s)", [days])
-        self.conn.commit()
+        def q(conn):
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ops.job_run WHERE started_at < now() - make_interval(days => %s)", [days])
+            conn.commit()
+        self._run(q)
 
     def recent_runs(self, limit: int = 60) -> list[dict]:
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT run_id, job, trigger, tickers, started_at, finished_at, status, seconds, log "
-                        "FROM ops.job_run ORDER BY started_at DESC LIMIT %s", [limit])
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+        def q(conn):
+            with conn.cursor() as cur:
+                cur.execute("SELECT run_id, job, trigger, tickers, started_at, finished_at, status, seconds, log "
+                            "FROM ops.job_run ORDER BY started_at DESC LIMIT %s", [limit])
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+            conn.commit()
+            return [dict(zip(cols, r)) for r in rows]
+        return self._run(q)
 
     def try_lock(self) -> bool:
         # Neon 풀러(-pooler) 주소는 트랜잭션 단위로 연결을 바꿔 써서 세션 잠금이 보장되지 않습니다.
@@ -191,9 +226,23 @@ class DbState:
     def unlock(self) -> None:
         if "-pooler" in (os.environ.get("DATABASE_URL") or ""):
             return
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_unlock(hashtext('kic_jobs_tick'))")
-        self.conn.commit()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(hashtext('kic_jobs_tick'))")
+            self.conn.commit()
+        except Exception:  # noqa: BLE001  연결이 끊겼으면 잠금도 이미 풀림
+            pass
+
+
+def _is_disconnect(exc: Exception, conn) -> bool:
+    """연결이 끊겨서 난 오류인지 (SQL 오류는 다시 시도하지 않음)."""
+    try:
+        import psycopg
+    except ImportError:
+        return False
+    if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
+        return True
+    return bool(getattr(conn, "closed", False) or getattr(conn, "broken", False))
 
 
 def ensure_schema(conn) -> bool:
@@ -286,7 +335,16 @@ def run_job(job: Job, state, *, conn=None, trigger: str = "tick", commands=None,
     cursor = st.get("cursor") or 0
     chunk_keys, next_cursor, complete = None, 0, True
     if job.split:
-        keys = universe if universe is not None else ticker_universe(conn, job.split)
+        if universe is not None:
+            keys = universe
+        elif hasattr(state, "_run"):  # 끊긴 연결이면 다시 열어서 읽기
+            def q(c):
+                out = ticker_universe(c, job.split)
+                c.commit()  # 읽기 트랜잭션을 열어 둔 채로 긴 작업에 들어가지 않게
+                return out
+            keys = state._run(q)
+        else:
+            keys = ticker_universe(conn, job.split)
         if cursor >= len(keys):
             cursor = 0
         chunk_keys = keys[cursor:cursor + job.chunk]

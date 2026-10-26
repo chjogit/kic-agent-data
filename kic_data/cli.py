@@ -766,19 +766,25 @@ def cmd_tick(args) -> int:
     """차례가 된 작업을 시간 예산 안에서 실행하고 결과표를 출력합니다 (실패가 있어도 0: 다음 실행에서 재시도)."""
     from . import jobs
 
-    with db.connect() as conn:
-        if jobs.ensure_schema(conn):
-            _ok("DB 스키마", "처음 실행이라 sql/*.sql 적용")
-        state = jobs.DbState(conn)
+    conn = db.connect()
+    if jobs.ensure_schema(conn):
+        _ok("DB 스키마", "처음 실행이라 sql/*.sql 적용")
+    state = jobs.DbState(conn, connect=db.connect)
+    try:
         if not state.try_lock():
             print("다른 실행이 진행 중이라 건너뜁니다.")
             return 0
         try:
-            result = jobs.tick(state, conn=conn, budget=args.budget, hard_limit=args.budget + 600, only=args.only)
+            result = jobs.tick(state, conn=conn, budget=args.budget, hard_limit=args.budget + 300, only=args.only)
             state.prune()
             ov = jobs.overview(state)
         finally:
             state.unlock()
+    finally:
+        try:
+            state.conn.close()
+        except Exception:  # noqa: BLE001
+            pass
     for r in result["ran"]:
         print(f"{r['status']:<8} {r['job']:<22} {r.get('seconds') or 0:>6}s  {r.get('detail') or ''}")
     if result["waiting"]:

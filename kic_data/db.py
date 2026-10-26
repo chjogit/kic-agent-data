@@ -18,7 +18,9 @@ SQL_DIR = Path(__file__).resolve().parent.parent / "sql"
 def connect():
     import psycopg
 
-    return psycopg.connect(env("DATABASE_URL", required=True), connect_timeout=30)
+    # keepalive: 수집 API 를 오래 기다리는 동안 쉬는 연결이 중간에서 끊기지 않게
+    return psycopg.connect(env("DATABASE_URL", required=True), connect_timeout=30,
+                           keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
 
 
 def apply_schema(conn) -> list[str]:
