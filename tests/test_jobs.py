@@ -200,3 +200,14 @@ def test_dbstate_without_connect_raises():
     state = jobs.DbState(_FakeConn(fail=True))
     with pytest.raises(psycopg.OperationalError):
         state.all()
+
+
+def test_once_job_retries_after_warn():
+    job = jobs.JOB_BY_NAME["backfill-etf"]
+    now = datetime(2026, 10, 26, 3, tzinfo=timezone.utc)
+    st = {"last_status": "warn", "last_finished": now - timedelta(hours=1), "last_complete": now - timedelta(hours=1)}
+    assert jobs.due_reason(job, st, now, []) is None
+    st["last_finished"] = now - timedelta(hours=7)
+    assert jobs.due_reason(job, st, now, []) == "일부 실패 재시도"
+    st["last_status"] = "ok"
+    assert jobs.due_reason(job, st, now, []) is None

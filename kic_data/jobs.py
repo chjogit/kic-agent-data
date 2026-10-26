@@ -31,6 +31,7 @@ LOG_LIMIT = 20000  # job_run.log 에 남길 최대 글자 수
 STALE_RUNNING = timedelta(minutes=6)  # 함수가 시간 초과로 끊겨 running 이 남은 경우
 RETRY_AFTER_FAIL = timedelta(minutes=30)
 RETRY_AFTER_SKIP = timedelta(hours=1)
+RETRY_ONCE_WARN = timedelta(hours=6)  # 1회 작업이 일부 실패로 끝나면 이 간격으로 다시 (키 승인 대기 등)
 
 
 @dataclass
@@ -281,6 +282,9 @@ def due_reason(job: Job, st: dict | None, now: datetime, missing: list[str]) -> 
     if st.get("cursor"):
         return "이어서"
     complete = st.get("last_complete")
+    if job.every is ONCE and last_status == "warn" and not st.get("cursor"):
+        # 1회 작업이 일부 실패로 끝났으면 완료로 보지 않고 6시간 뒤 다시 (예: ETF 활용신청 승인 전 403)
+        return "일부 실패 재시도" if not finished or now - finished >= RETRY_ONCE_WARN else None
     if complete is None:
         return "처음"
     if job.every is ONCE:
