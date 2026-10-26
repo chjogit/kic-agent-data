@@ -38,6 +38,7 @@ def parse_prices(payload: dict) -> list[dict]:
                 "trade_value": to_decimal(it.get("trPrc")),
                 "market_cap": to_decimal(it.get("mrktTotAmt")),
                 "shares": to_int(it.get("lstgStCnt")),  # 상장주식수 (DB 시세 테이블엔 저장하지 않음)
+                "ticker": (it.get("srtnCd") or "").strip().lstrip("A") or None,  # 전 종목 조회에서 종목 구분
             }
         )
     return rows
@@ -55,6 +56,34 @@ def fetch_prices(session, ticker: str, begin: str, end: str, rows: int = 1000) -
     }
     payload = get_json(session, "fsc", URL, params=params, limiter=_limiter)
     return parse_prices(payload)
+
+
+def total_count(payload: dict) -> int:
+    return to_int(payload.get("response", {}).get("body", {}).get("totalCount")) or 0
+
+
+def fetch_all_prices(session, begin: str, end: str, rows: int = 5000, max_pages: int = 40) -> list[dict]:
+    """기간 안의 전 종목 시세 (종목 지정 없음). KOSPI 200 처럼 종목이 많을 때 종목별 호출 대신 씁니다.
+
+    하루 약 2,800행(코스피·코스닥·코넥스)이라 10일이면 5,000행씩 6쪽 정도입니다.
+    """
+    out, page = [], 1
+    while page <= max_pages:
+        params = {
+            "serviceKey": env("FSC_API_KEY", required=True),
+            "resultType": "json",
+            "numOfRows": rows,
+            "pageNo": page,
+            "beginBasDt": begin,
+            "endBasDt": end,
+        }
+        payload = get_json(session, "fsc", URL, params=params, limiter=_limiter, timeout=90)
+        part = parse_prices(payload)
+        out += part
+        if not part or page * rows >= total_count(payload):
+            break
+        page += 1
+    return out
 
 
 def latest_shares(rows: list[dict]) -> tuple[int, object] | None:
