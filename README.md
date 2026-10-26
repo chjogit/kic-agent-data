@@ -8,6 +8,41 @@ Neon(Postgres + pgvector)에 국내·해외 주식 데이터를 모으는 VS Cod
 > 설정 방법: [`docs/AUTO_RUN.md`](docs/AUTO_RUN.md). 웹 대시보드를 서버에 올리려면 [`docs/DEPLOY_VERCEL.md`](docs/DEPLOY_VERCEL.md) (선택).
 > 작업 스케줄러(`scripts/*.bat`)와는 둘 중 하나만 쓰세요.
 
+## 한눈에 보는 구조 (그림)
+
+### API 호출부터 Neon DB 저장까지
+
+![데이터 수집 파이프라인: 출처 API → 수집기 → tick 작업 → Neon 테이블](docs/diagrams/pipeline.png)
+
+GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업만 ① 준비 → ② 과거분 → ③ 정기 수집 → ④ 재무 → ⑤ 파생 계산 순서로
+외부 API 를 호출해 Neon 에 적재합니다. 작업 상태는 `ops` 스키마에 남고, 20분 예산을 넘긴 작업은 다음 실행이 이어받습니다.
+
+### DB 구조
+
+![Neon Postgres DB 구조: core·rag·ops·raw 스키마와 테이블, 외래키](docs/diagrams/db_schema.png)
+
+### 데이터 출처
+
+| 데이터 | 제공 기관 · API | 적재 테이블 |
+|---|---|---|
+| 국내 주식 일별 시세, 발행주식수 | 금융위원회 주식시세정보 (공공데이터포털 `GetStockSecuritiesInfoService_V2`) | `core.price_daily`, `core.company` |
+| 국내 ETF 시세·NAV | 금융위원회 증권상품시세정보 (공공데이터포털 `GetSecuritiesProductInfoService`) | `core.etf_price_daily` |
+| 해외 주식 시세, 시장 지수 | Yahoo Finance (`yfinance`, 비공식 라이브러리 · 개발·연구용) | `core.price_daily`, `core.market_index_daily` |
+| 국내 재무제표·공시·기업개황 | 금융감독원 OpenDART (`corpCode`, `company`, `fnlttSinglAcntAll`, `list`) | `core.financial_fact`, `core.disclosure`, `core.company` |
+| 해외 재무제표·제출서류 | 미국 SEC EDGAR (`company_tickers`, `submissions`, XBRL `companyfacts`) | `core.financial_fact`, `core.disclosure`, `core.company` |
+| 국내 거시 (기준금리·원/달러) | 한국은행 ECOS (`StatisticSearch`) | `core.macro_series`, `core.macro_obs` |
+| 미국 거시·환율·반도체 업황 | 세인트루이스 연준 FRED (`series/observations`) | `core.macro_series`, `core.macro_obs` |
+| 반도체 수출입 (HS 854232·854231) | 관세청 품목별 수출입실적 (공공데이터포털 `Itemtrade`) | `core.macro_obs` (`KCS_*`) |
+| 국내 뉴스 (제목·요약·링크) | 네이버 검색 API `news` | `rag.document` (`naver_news`) |
+| 블로그·카페 반응, 언급량 | 네이버 검색 API `blog`·`cafearticle` (검색 건수 포함) | `rag.document`, `core.mention_count`, `core.reaction_pulse` |
+| 검색 관심도 | NAVER API HUB 검색어 트렌드 (구 네이버 데이터랩) | `core.search_trend` |
+| 해외 영문 뉴스 | Finnhub `company-news` | `rag.document` (`finnhub_news`) |
+| 유튜브 공개 영상·댓글 | YouTube Data API v3 (`search`, `videos`, `commentThreads`, API 키만) | `core.youtube_video`, `rag.document` (`youtube_comment`) |
+
+감성 점수(`core.doc_sentiment`), 분기 단독 값·TTM(`core.financial_quarter`, `core.v_ttm`), Peer Group, 5개 관점 지표(`core.feature_snapshot`)는
+위 테이블에서 DB 안에서 계산한 파생 값입니다. 각 출처의 이용 조건은 제공 기관 약관을 따릅니다.
+그림 원본은 `docs/diagrams/*.html` 이고, 고친 뒤 `node docs/diagrams/render.js` 로 PNG 를 다시 만듭니다.
+
 ## 0. 팀 결정 사항 (코드에 반영됨)
 
 | 항목 | 결정 |
