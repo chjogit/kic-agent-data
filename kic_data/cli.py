@@ -368,9 +368,10 @@ def cmd_customs(args) -> int:
             label = customs.HS_NAMES.get(hs, f"HS {hs}")
             n1 = db.upsert_macro(conn, f"KCS_EXP_{hs}_USD", f"{label} 수출금액(USD)", "kcs", "M", sorted(exp_rows.items()))
             n2 = db.upsert_macro(conn, f"KCS_IMP_{hs}_USD", f"{label} 수입금액(USD)", "kcs", "M", sorted(imp_rows.items()))
-            _ok(f"HS {hs}", f"수출 {n1}개월 / 수입 {n2}개월")
-            if n1 == 0:
-                print("       (0건: 활용신청 승인·엔드포인트·HS 코드를 확인하세요)")
+            if n1 == 0:  # 응답은 정상인데 행이 없으면 실패로 남겨 자동 실행 요약에서 보이게 (1회 작업은 6시간 뒤 재시도)
+                _fail(f"HS {hs}", "0건: 활용신청 승인·엔드포인트·HS 코드를 확인하세요")
+            else:
+                _ok(f"HS {hs}", f"수출 {n1}개월 / 수입 {n2}개월")
     return 0
 
 
