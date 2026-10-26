@@ -112,8 +112,6 @@ JOBS: list[Job] = [
         needs=DB, needs_any=DATA_GO, group="과거분(1회)"),
     Job("backfill-investor-flows", "투자자별 순매수 1년", "cmd_investor_flows", {"days": 365}, every=ONCE,
         needs=DB, split=("KR",), chunk=20, group="과거분(1회)"),
-    Job("backfill-lending", "대차거래 1년(코스피 전 종목)", "cmd_lending", {"days": 365}, every=ONCE,
-        needs=DB, needs_any=DATA_GO, group="과거분(1회)"),
     Job("backfill-dart-annual", "국내 연간 재무 5년(다중회사)", "cmd_dart_multi",
         {"from_year": _years_ago(5), "reports": "11011"}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
     Job("backfill-dart-quarterly", "국내 분기 재무 2년(다중회사)", "cmd_dart_multi",
@@ -138,8 +136,8 @@ JOBS: list[Job] = [
     # ↑ 검색 1회 100단위(하루 10,000)라 영상이 많은 국내 시총 상위 40종목 + 해외 종목만 매일 (약 5,700 + 댓글 수백)
     Job("investor-flows", "투자자별 순매수(외국인·기관·개인)", "cmd_investor_flows", {"days": 10}, every=DAY,
         needs=DB, split=("KR",), chunk=50),  # 네이버 비공식 API 라 종목당 하루 1회만
-    Job("lending", "대차거래(코스피 전 종목, 공매도 대용)", "cmd_lending", {"days": 10}, every=DAY,
-        needs=DB, needs_any=DATA_GO),  # 일 1회 갱신 자료
+    Job("lending", "대차거래(코스피 전 종목, 공매도 대용)", "cmd_lending", {"days": 365, "max_days": 40},
+        needs=DB, needs_any=DATA_GO),  # 빠진 거래일만 최근부터 40일씩 (1년치는 몇 시간에 걸쳐 채움, 이후엔 하루 1~2회 호출)
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
@@ -160,7 +158,7 @@ JOBS: list[Job] = [
 ]
 # 새 종목이 들어오면 다시 해야 하는 과거분 (종목마다 받는 것)
 PER_TICKER_BACKFILLS = ("backfill-kr-prices", "backfill-disclosures", "backfill-news", "backfill-community",
-                        "backfill-trends", "backfill-investor-flows", "backfill-lending", "backfill-dart-annual", "backfill-dart-quarterly")
+                        "backfill-trends", "backfill-investor-flows", "backfill-dart-annual", "backfill-dart-quarterly")
 JOB_BY_NAME = {j.name: j for j in JOBS}
 
 

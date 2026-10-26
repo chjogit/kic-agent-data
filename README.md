@@ -39,7 +39,7 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 해외 영문 뉴스 | Finnhub `company-news` | `rag.document` (`finnhub_news`) |
 | 유튜브 공개 영상·댓글 | YouTube Data API v3 (`search`, `videos`, `commentThreads`, API 키만) | `core.youtube_video`, `rag.document` (`youtube_comment`) |
 | 국내 투자자별 순매수 (외국인·기관·개인, 수량), 외국인 보유율 | 네이버 증권 모바일 공개 API (`m.stock.naver.com/api/stock/{종목}/trend`, 비공식·로그인 불필요) | `core.investor_flow_daily` |
-| 코스피 종목별 대차거래·대차잔고 (공매도 대용) | 금융위원회 주식대차거래정보 (공공데이터포털 `GetCMStckLnbInfoService`, 공공누리 4유형) | `core.stock_lending_daily` |
+| 코스피 종목별 대차거래·대차잔고 (공매도 대용, 빠진 거래일만 매시간 40일씩) | 금융위원회 주식대차거래정보 (공공데이터포털 `GetCMStckLnbInfoService`, 공공누리 4유형) | `core.stock_lending_daily` |
 
 감성 점수(`core.doc_sentiment`), 분기 단독 값·TTM(`core.financial_quarter`, `core.v_ttm`), Peer Group, 5개 관점 지표(`core.feature_snapshot`)는
 위 테이블에서 DB 안에서 계산한 파생 값입니다. 각 출처의 이용 조건은 제공 기관 약관을 따릅니다.

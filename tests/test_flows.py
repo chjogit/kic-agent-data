@@ -79,10 +79,39 @@ class LendingTest(unittest.TestCase):
 
 class JobsTest(unittest.TestCase):
     def test_registered(self):
-        for name in ("investor-flows", "backfill-investor-flows", "lending", "backfill-lending"):
+        for name in ("investor-flows", "backfill-investor-flows", "lending"):
             self.assertIn(name, jobs.JOB_BY_NAME)
         self.assertIn("backfill-investor-flows", jobs.PER_TICKER_BACKFILLS)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LendingCommandTest(unittest.TestCase):
+    def test_only_missing_trading_days_newest_first(self):
+        from argparse import Namespace
+        from contextlib import nullcontext
+
+        from kic_data import cli
+
+        today = date.today()
+        trading = [today - timedelta(days=i) for i in range(1, 8)]
+        asked = []
+
+        def fetch_day(session, d):
+            asked.append(d)
+            return [{"ticker": "005930", "trade_date": d, "lent_qty": 1, "repaid_qty": 1, "balance_qty": 10, "balance_amt": 100}]
+
+        written = []
+        with mock.patch.object(cli.db, "connect", return_value=nullcontext(None)), \
+             mock.patch.object(cli.db, "list_companies", return_value=[(7, "005930", "삼성전자", None, None)]), \
+             mock.patch.object(cli.db, "lending_dates", return_value={trading[0]}), \
+             mock.patch.object(cli.db, "trading_dates", return_value=sorted(trading)), \
+             mock.patch.object(cli.db, "upsert_lending", side_effect=lambda c, cid, rows, src: written.append((cid, rows)) or len(rows)), \
+             mock.patch.object(cli.lending, "fetch_day", side_effect=fetch_day):
+            rc = cli.cmd_lending(Namespace(days=30, max_days=3))
+        self.assertEqual(rc, 0)
+        self.assertEqual(asked, trading[1:4])  # 이미 있는 날은 건너뛰고 최근부터 3일
+        self.assertEqual(written[0][0], 7)
+        self.assertEqual(len(written[0][1]), 3)

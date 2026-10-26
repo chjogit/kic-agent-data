@@ -266,6 +266,20 @@ def upsert_lending(conn, company_id: int, rows: list[dict], source: str) -> int:
     return len(params)
 
 
+def trading_dates(conn, market: str, since) -> list:
+    """since 이후 시세가 있는 거래일 (국내 시세가 영업일 달력 역할)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT p.trade_date FROM core.price_daily p JOIN core.company c USING (company_id) "
+                    "WHERE c.market = %s AND p.trade_date >= %s ORDER BY 1", [market, since])
+        return [r[0] for r in cur.fetchall()]
+
+
+def lending_dates(conn, since) -> set:
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT trade_date FROM core.stock_lending_daily WHERE trade_date >= %s", [since])
+        return {r[0] for r in cur.fetchall()}
+
+
 def fetch_lending(conn, company_id: int, n: int = 60) -> list[dict]:
     """최근 n 거래일 대차거래 (오름차순)."""
     with conn.cursor() as cur:
