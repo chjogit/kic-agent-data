@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>수집 파이프라인</title>
+<!-- docs/diagrams/render.js 가 이 파일을 열어 같은 이름의 .png 로 저장합니다 -->
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #1f2328; --muted: #59636e; --line: #d0d7de; --bg: #ffffff; --panel: #f6f8fa;
+  --core: #0969da; --core-bg: #ddf4ff; --rag: #1a7f37; --rag-bg: #dafbe1;
+  --ops: #9a6700; --ops-bg: #fff8c5; --raw: #6e7781; --raw-bg: #eaeef2;
+  --s1: #8250df; --s2: #bf3989; --s3: #0969da; --s4: #1a7f37; --s5: #bc4c00;
+}
+* { box-sizing: border-box; margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: "Noto Sans KR", sans-serif; font-size: 15px; }
+.page { width: 1800px; padding: 36px 40px 32px; }
+h1 { font-size: 28px; font-weight: 700; }
+.sub { color: var(--muted); margin-top: 6px; font-size: 15px; }
+code, .mono { font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
+
+.top { display: grid; grid-template-columns: 320px 40px 1fr 40px 380px; align-items: stretch; margin-top: 26px; }
+.box { border: 1.5px solid var(--line); border-radius: 10px; padding: 14px 18px; background: var(--bg); }
+.box h3 { font-size: 17px; font-weight: 700; }
+.box p { color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.box.tick { border-color: var(--core); background: #f3f9ff; }
+.box.ops { border-color: var(--ops); background: var(--ops-bg); }
+.arrow { display: flex; align-items: center; justify-content: center; color: #8c959f; font-size: 24px; }
+
+.stages { display: flex; gap: 10px; margin-top: 14px; }
+.stage { flex: 1; border-radius: 8px; padding: 9px 12px; color: #fff; font-weight: 700; font-size: 14px; }
+.stage span { display: block; font-weight: 400; font-size: 12.5px; opacity: .92; margin-top: 2px; }
+.n1 { background: var(--s1); } .n2 { background: var(--s2); } .n3 { background: var(--s3); } .n4 { background: var(--s4); } .n5 { background: var(--s5); }
+
+.flow { margin-top: 22px; display: grid; grid-template-columns: 30px 500px 30px 205px 30px 1fr 30px 340px; row-gap: 8px; }
+.hd { font-size: 13px; font-weight: 700; color: var(--muted); padding: 0 4px 2px; letter-spacing: .02em; }
+.cat { grid-column: 1; writing-mode: vertical-rl; text-orientation: mixed; font-size: 13px; font-weight: 700; color: #fff;
+       border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+.c1 { background: #57606a; } .c2 { background: #6639ba; } .c3 { background: #0550ae; } .c4 { background: #116329; }
+.src, .col, .job, .tbl { border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: var(--bg); }
+.src { margin-left: 8px; }
+.src b { font-size: 15px; }
+.src .org { color: var(--muted); font-size: 13px; margin-left: 6px; }
+.src .ep { color: var(--muted); margin-top: 3px; line-height: 1.45; overflow-wrap: anywhere; }
+.col { background: var(--panel); display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.col code { font-size: 13px; }
+.job { line-height: 1.75; }
+.b { display: inline-block; min-width: 20px; text-align: center; color: #fff; border-radius: 4px; font-size: 12px; font-weight: 700; padding: 0 5px; margin-right: 5px; }
+.job .j { margin-right: 14px; white-space: nowrap; }
+.job .j code { color: var(--ink); }
+.job .j em { font-style: normal; color: var(--muted); font-size: 13px; }
+.tbl { display: flex; flex-wrap: wrap; align-content: center; gap: 5px; }
+.t { border-radius: 5px; padding: 2px 7px; font-family: "JetBrains Mono", monospace; font-size: 12.5px; font-weight: 500; }
+.t.core { background: var(--core-bg); color: var(--core); }
+.t.rag { background: var(--rag-bg); color: var(--rag); }
+.t.ops { background: var(--ops-bg); color: var(--ops); }
+.t small { font-family: "Noto Sans KR", sans-serif; font-weight: 400; color: var(--muted); margin-left: 3px; }
+.ar { display: flex; align-items: center; justify-content: center; color: #8c959f; font-size: 18px; }
+
+.derive { margin-top: 22px; border: 1.5px solid var(--s5); border-radius: 10px; padding: 14px 18px; background: #fff8f2; }
+.derive h3 { font-size: 16px; }
+.derive h3 .b { background: var(--s5); }
+.dgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 10px; }
+.d { border: 1px solid #f0c9a8; border-radius: 8px; padding: 9px 12px; background: #fff; line-height: 1.55; }
+.d b { display: block; }
+.d .from { color: var(--muted); font-size: 13px; }
+.agent { margin-top: 12px; color: var(--muted); font-size: 14px; }
+.agent b { color: var(--ink); }
+
+.legend { margin-top: 18px; display: flex; gap: 22px; align-items: center; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+.note { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page" id="capture">
+  <h1>API 호출부터 Neon DB 저장까지: 데이터 수집 파이프라인</h1>
+  <p class="sub">GitHub Actions 매시간 실행 · 대상 KOSPI 200 전 종목 + 해외 비교군 · 저장소 <span class="mono">chjogit/kic-agent-data</span> 2026-10-26 코드 기준</p>
+
+  <div class="top">
+    <div class="box"><h3>GitHub Actions</h3><p>매시 7분 예약 실행 <code>cron "7 * * * *"</code><br>수동 실행(Run workflow, only 칸)</p></div>
+    <div class="arrow">→</div>
+    <div class="box tick"><h3>tick 실행기 <code>python -m kic_data.cli tick --budget 1200</code></h3>
+      <p>작업별 마지막 완료 시각을 읽어 주기가 돌아온 작업만 ①→⑤ 순서로 실행합니다. 종목이 많은 작업은 몇 종목씩 나눠 커서를 남기고,
+         20분 예산을 넘기면 남은 작업은 다음 실행이 이어받습니다. API 키가 없는 작업은 실패가 아니라 '건너뜀'으로 기록합니다.</p></div>
+    <div class="arrow">⇄</div>
+    <div class="box ops"><h3>ops 스키마</h3><p><code>ops.job_state</code> 작업별 커서·마지막 상태<br><code>ops.job_run</code> 실행 이력·로그</p></div>
+  </div>
+
+  <div class="stages">
+    <div class="stage n1">① 준비 · 매일<span>스키마 적용, 종목 마스터, DART 고유번호, 업종·발행주식수</span></div>
+    <div class="stage n2">② 과거분 · 최초 1회<span>시세·지수·ETF·거시 5년, 공시 1년, 뉴스 30일, 검색 1년</span></div>
+    <div class="stage n3">③ 정기 수집 · 매시간<span>시세·지수·ETF·거시 최근분, 공시·뉴스·블로그·카페·검색</span></div>
+    <div class="stage n4">④ 재무 · 매일(국내 연간은 매주)<span>DART·SEC 연간·분기 재무, 분기 단독 값·TTM, Peer</span></div>
+    <div class="stage n5">⑤ 파생 계산 · 매시간<span>감성 점수, 언급량 스냅샷, 5개 관점 지표</span></div>
+  </div>
+
+  <div class="flow">
+    <div></div>
+    <div class="hd" style="padding-left:12px">출처 (기관 · API 엔드포인트)</div><div></div>
+    <div class="hd">수집기 <span class="mono">kic_data/</span></div><div></div>
+    <div class="hd">tick 작업 (단계 · 범위)</div><div></div>
+    <div class="hd">Neon 적재 테이블</div>
+
+    <!-- 시세·지수 -->
+    <div class="cat c1" style="grid-row: span 4">시세 · 지수</div>
+    <div class="src"><b>주식시세정보</b><span class="org">금융위원회 · 공공데이터포털</span>
+      <div class="ep mono">apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/fsc.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-kr-prices</code> <em>5년</em></span><span class="j"><span class="b n3">③</span><code>kr-prices</code> <em>최근 10일</em></span><span class="j"><span class="b n1">①</span><code>company-info</code> <em>발행주식수</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.price_daily<small>국내</small></span><span class="t core">core.company</span></div>
+
+    <div class="src"><b>증권상품시세정보 (ETF)</b><span class="org">금융위원회 · 공공데이터포털</span>
+      <div class="ep mono">apis.data.go.kr/1160100/service/<br>GetSecuritiesProductInfoService</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/etf.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-etf</code> <em>5년</em></span><span class="j"><span class="b n3">③</span><code>etf-prices</code> <em>최근 10일</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.etf_price_daily</span></div>
+
+    <div class="src"><b>Yahoo Finance</b><span class="org">yfinance 라이브러리 (비공식, 연구용)</span>
+      <div class="ep">해외 종목 일봉</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/us_prices.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-us-prices</code> <em>5년</em></span><span class="j"><span class="b n3">③</span><code>us-prices</code> <em>최근 10일</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.price_daily<small>해외</small></span></div>
+
+    <div class="src"><b>Yahoo Finance 지수</b><span class="org">yfinance</span>
+      <div class="ep mono">^KS11 ^KQ11 ^GSPC ^IXIC ^SOX ^VIX</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/indices.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-indices</code> <em>5년</em></span><span class="j"><span class="b n3">③</span><code>indices</code> <em>최근 10일</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.market_index_daily</span></div>
+
+    <!-- 재무·공시 -->
+    <div class="cat c2" style="grid-row: span 2">재무 · 공시</div>
+    <div class="src"><b>OpenDART</b><span class="org">금융감독원 전자공시</span>
+      <div class="ep mono">opendart.fss.or.kr/api · corpCode.xml · company.json · fnlttSinglAcntAll.json · list.json</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/dart.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n1">①</span><code>sync-dart-codes</code> <code>company-info</code></span><span class="j"><span class="b n2">②</span><code>backfill-disclosures</code> <em>1년</em></span><span class="j"><span class="b n3">③</span><code>disclosures</code> <em>3일</em></span><br><span class="j"><span class="b n4">④</span><code>dart-annual</code> <em>매주 5년</em></span><span class="j"><span class="b n4">④</span><code>dart-quarterly</code> <em>올해</em></span><span class="j"><span class="b n2">②</span><code>backfill-dart-quarterly</code> <em>2년</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.company</span><span class="t core">core.disclosure</span><span class="t core">core.financial_fact</span></div>
+
+    <div class="src"><b>SEC EDGAR</b><span class="org">미국 증권거래위원회</span>
+      <div class="ep mono">sec.gov/files/company_tickers.json · data.sec.gov/submissions · data.sec.gov/api/xbrl/companyfacts</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/sec.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n1">①</span><code>company-info</code></span><span class="j"><span class="b n2">②</span><code>backfill-disclosures</code></span><span class="j"><span class="b n3">③</span><code>disclosures</code></span><br><span class="j"><span class="b n4">④</span><code>sec-annual</code> <em>5년</em></span><span class="j"><span class="b n4">④</span><code>sec-quarterly</code> <em>2년</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.company</span><span class="t core">core.disclosure</span><span class="t core">core.financial_fact</span></div>
+
+    <!-- 거시·무역 -->
+    <div class="cat c3" style="grid-row: span 2">거시 · 무역</div>
+    <div class="src"><b>ECOS · FRED</b><span class="org">한국은행 경제통계 · 미국 세인트루이스 연준</span>
+      <div class="ep mono">ecos.bok.or.kr/api/StatisticSearch · api.stlouisfed.org/fred/series/observations</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/macro.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-macro</code> <em>5년</em></span><span class="j"><span class="b n3">③</span><code>macro</code> <em>최근 1년</em></span><br><em style="color:var(--muted);font-size:13px;font-style:normal">기준금리·원/달러·미 10년물·연방기금금리·CPI·환율·반도체 산업생산·PPI</em></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.macro_series</span><span class="t core">core.macro_obs</span></div>
+
+    <div class="src"><b>품목별 수출입실적</b><span class="org">관세청 · 공공데이터포털</span>
+      <div class="ep mono">apis.data.go.kr/1220000/Itemtrade/getItemtradeList · HS 854232·854231</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/customs.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-customs</code> <em>5년</em></span><span class="j"><span class="b n3">③</span><code>customs</code> <em>매일 · 최근 13개월</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.macro_obs<small>KCS_*</small></span></div>
+
+    <!-- 뉴스·여론·검색 -->
+    <div class="cat c4" style="grid-row: span 5">뉴스 · 여론 · 검색</div>
+    <div class="src"><b>네이버 검색 API · 뉴스</b><span class="org">NAVER Developers</span>
+      <div class="ep mono">openapi.naver.com/v1/search/news.json · 제목·요약·링크·게시일</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/news.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-news</code> <em>30일</em></span><span class="j"><span class="b n3">③</span><code>news</code> <em>최근 2일</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t rag">rag.document<small>naver_news</small></span></div>
+
+    <div class="src"><b>네이버 검색 API · 블로그·카페</b><span class="org">NAVER Developers</span>
+      <div class="ep mono">openapi.naver.com/v1/search/blog.json · cafearticle.json · 검색 건수(total)</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/community.py</code><code>pulse.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-community</code> <em>30일</em></span><span class="j"><span class="b n3">③</span><code>community</code> <em>최근 2일</em></span><span class="j"><span class="b n5">⑤</span><code>mentions</code> <em>언급량</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t rag">rag.document<small>blog·cafe</small></span><span class="t core">core.mention_count</span><span class="t core">core.reaction_pulse</span></div>
+
+    <div class="src"><b>검색어 트렌드</b><span class="org">NAVER API HUB (구 네이버 데이터랩)</span>
+      <div class="ep mono">naverapihub.apigw.ntruss.com/search-trend/v1/search · openapi.naver.com/v1/datalab/search</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/trends.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n2">②</span><code>backfill-trends</code> <em>1년</em></span><span class="j"><span class="b n3">③</span><code>trends</code> <em>최근 14일</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.search_trend</span></div>
+
+    <div class="src"><b>Finnhub Company News</b><span class="org">finnhub.io · 해외 영문 뉴스</span>
+      <div class="ep mono">finnhub.io/api/v1/company-news</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/finnhub.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n3">③</span><code>finnhub-news</code> <em>최근 3일</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t rag">rag.document<small>finnhub_news</small></span></div>
+
+    <div class="src"><b>YouTube Data API v3</b><span class="org">Google · API 키만 (공개 데이터)</span>
+      <div class="ep mono">googleapis.com/youtube/v3 · search · videos · commentThreads</div></div>
+    <div class="ar">→</div><div class="col"><code>collectors/youtube.py</code></div><div class="ar">→</div>
+    <div class="job"><span class="j"><span class="b n3">③</span><code>youtube</code> <em>매일 · 최근 7일 영상 5개, 댓글 100개 (작성자 미저장)</em></span></div>
+    <div class="ar">→</div>
+    <div class="tbl"><span class="t core">core.youtube_video</span><span class="t rag">rag.document<small>youtube_comment</small></span></div>
+  </div>
+
+  <div class="derive">
+    <h3><span class="b">④⑤</span>파생 계산: 외부 호출 없이 DB 안에서 다시 계산</h3>
+    <div class="dgrid">
+      <div class="d"><b>감성 점수 <code>sentiment.py</code></b><span class="from">rag.document 제목+요약 → 키워드 사전</span><br><span class="t core">core.doc_sentiment</span></div>
+      <div class="d"><b>분기 단독 값·TTM <code>quarterly.py</code></b><span class="from">core.financial_fact 누적값 → 분기 차감</span><br><span class="t core">core.financial_quarter</span> <span class="t core">core.v_ttm</span></div>
+      <div class="d"><b>Peer Group <code>build-peer-groups</code></b><span class="from">업종 테마 구성 종목 → 시가총액 순</span><br><span class="t core">core.peer_group</span> <span class="t core">core.peer_member</span></div>
+      <div class="d"><b>5개 관점 지표 <code>features.py</code></b><span class="from">시세·재무·거시·감성·검색 → 지표</span><br><span class="t core">core.feature_snapshot</span></div>
+    </div>
+    <p class="agent">→ Agent 도구가 읽는 곳: <b>core</b> (정형 수치, Text-to-SQL) · <b>rag</b> (원문 근거). LLM은 수치를 만들지 않고 이 테이블의 확정값만 인용합니다.</p>
+  </div>
+
+  <div class="legend">
+    <span><span class="t core">core.*</span> 분석용 정제 데이터</span>
+    <span><span class="t rag">rag.*</span> 뉴스·글 문서 (원문 근거)</span>
+    <span><span class="t ops">ops.*</span> 자동 수집 상태·이력</span>
+    <span><span class="t" style="background:var(--raw-bg);color:var(--raw)">raw.api_payload</span> API 원본 백업 (기본 저장 안 함)</span>
+  </div>
+  <p class="note">모든 호출은 <code>kic_data/http_util.py</code>를 거쳐 재시도·속도 제한을 적용합니다. API 키는 GitHub Actions Secrets에만 두며 DB와 저장소에는 저장하지 않습니다.
+    yfinance는 Yahoo Finance의 비공식 라이브러리로 개발·연구용입니다. 각 출처의 이용 조건은 해당 기관 약관을 따릅니다.</p>
+</div>
+</body>
+</html>
