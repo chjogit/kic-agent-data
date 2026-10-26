@@ -310,3 +310,18 @@ def test_unreachable_source_fails_fast(monkeypatch):
         http_util.get(S(), "fsc-etf", "https://example.invalid")  # 같은 서버는 바로 실패
     assert len(calls) == 1 and calls[0][0] == http_util.CONNECT_TIMEOUT
     http_util._down.clear()
+
+
+def test_new_macro_series_backfill_start(monkeypatch):
+    from datetime import date, timedelta
+
+    from kic_data import cli, db
+    from kic_data.collectors import macro
+
+    ids = [r[0] for r in macro.ECOS_SERIES] + [r[0] for r in macro.FRED_SERIES]
+    assert len(ids) == len(set(ids))
+    assert {"ECOS_CPI", "ECOS_KTB3Y", "ECOS_KTB10Y", "DEXJPUS", "DEXCHUS", "DCOILWTICO"} <= set(ids)
+    start = date.today() - timedelta(days=365)
+    monkeypatch.setattr(db, "has_macro", lambda conn, sid: sid == "OLD")
+    assert cli._macro_start(None, "OLD", start) == start
+    assert cli._macro_start(None, "NEW", start) <= date.today() - timedelta(days=365 * 5)

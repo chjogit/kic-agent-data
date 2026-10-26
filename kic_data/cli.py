@@ -560,6 +560,13 @@ def cmd_sec(args) -> int:
     return 0
 
 
+def _macro_start(conn, series_id: str, start: date) -> date:
+    """DB에 아직 없는 시리즈는 과거분(NEW_SERIES_YEARS)부터 받습니다. 매시간 작업은 최근 1년만 받기 때문."""
+    if db.has_macro(conn, series_id):
+        return start
+    return min(start, date.today() - timedelta(days=365 * macro.NEW_SERIES_YEARS))
+
+
 def cmd_macro(args) -> int:
     """ECOS·FRED. 키가 없는 쪽은 건너뛰고, 시리즈 하나가 실패해도 나머지는 계속합니다."""
     s = make_session()
@@ -570,8 +577,9 @@ def cmd_macro(args) -> int:
             print("[SKIP] ECOS_API_KEY 없음 → 한국은행 지표 건너뜀")
         for sid, name, stat, cyc, item in (macro.ECOS_SERIES if env("ECOS_API_KEY") else []):
             fmt = {"D": "%Y%m%d", "M": "%Y%m"}[cyc]
+            since = _macro_start(conn, sid, start)
             try:
-                rows = macro.fetch_ecos(s, stat, cyc, start.strftime(fmt), date.today().strftime(fmt), item)
+                rows = macro.fetch_ecos(s, stat, cyc, since.strftime(fmt), date.today().strftime(fmt), item)
             except RuntimeError as exc:
                 _fail(sid, str(exc))
                 bad += 1
@@ -581,7 +589,7 @@ def cmd_macro(args) -> int:
             print("[SKIP] FRED_API_KEY 없음 → FRED 지표 건너뜀")
         for sid, name, cyc in (macro.FRED_SERIES if env("FRED_API_KEY") else []):
             try:
-                rows = macro.fetch_fred(s, sid, start.isoformat())
+                rows = macro.fetch_fred(s, sid, _macro_start(conn, sid, start).isoformat())
             except RuntimeError as exc:
                 _fail(sid, str(exc))
                 bad += 1
