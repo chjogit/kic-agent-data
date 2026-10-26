@@ -215,12 +215,11 @@ def test_once_job_retries_after_warn():
 
 # ---------------------------------------------------------------- KOSPI 200 확대
 
-def test_parse_kospi200_entry_page():
+def test_parse_kospi200_enroll():
     from kic_data.collectors import kospi200
-    html = ('<td class="ctg"><a href="/item/main.naver?code=005930" target="_parent">삼성전자</a></td>'
-            '<td><a href="/item/main.naver?code=000660" target="_parent">SK하이닉스</a></td>'
-            '<a href="/item/main.naver?code=005930">삼성전자</a>')
-    assert kospi200.parse_entry_page(html) == [("005930", "삼성전자"), ("000660", "SK하이닉스")]
+    payload = [{"itemCode": "005930", "stockName": "삼성전자"}, {"itemCode": "000660", "stockName": "SK하이닉스"}, {"x": 1}]
+    assert kospi200.parse_enroll(payload) == [("005930", "삼성전자"), ("000660", "SK하이닉스")]
+    assert kospi200.parse_enroll({"error": 1}) == []
 
 
 def test_ksic_to_krx_sector():
@@ -260,17 +259,6 @@ def test_dart_parse_multi_maps_accounts():
     assert out["005930"][1]["account_id"] == "ifrs-full_Assets"
     assert out["000660"][0]["account_id"] == "ifrs-full_ProfitLoss" and out["000660"][0]["fs_div"] == "OFS"
     assert dart.parse_multi({"status": "013"}, 2025, "11011") == {}
-
-
-def test_spread_job_waits_between_chunks():
-    job = jobs.JOB_BY_NAME["youtube"]
-    now = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
-    st = {"last_status": "partial", "cursor": 40, "last_finished": now - timedelta(hours=2), "last_complete": None}
-    assert jobs.due_reason(job, st, now, []) is None
-    st["last_finished"] = now - timedelta(days=1)
-    assert jobs.due_reason(job, st, now, []) == "이어서"
-    news = jobs.JOB_BY_NAME["news"]  # 보통 작업은 남은 묶음을 바로 이어서
-    assert jobs.due_reason(news, {**st, "last_finished": now - timedelta(minutes=50)}, now, []) == "이어서"
 
 
 def test_kospi200_jobs_wired():

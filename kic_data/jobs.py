@@ -47,7 +47,6 @@ class Job:
     split: tuple[str, ...] = ()  # 종목을 나눠 처리할 시장 ("KR", "US")
     chunk: int = 6
     group: str = "매시간"
-    spread: bool = False  # True: 나눠 처리할 때 묶음 사이에도 주기(every)를 둠 (할당량이 작은 API)
 
     def namespace(self) -> Namespace:
         return Namespace(**{k: (v() if callable(v) else v) for k, v in self.kwargs.items()})
@@ -130,9 +129,9 @@ JOBS: list[Job] = [
     Job("community", "블로그·카페 반응", "cmd_community", {"days": 2, "sources": "naver_blog,naver_cafe", "pages": 1},
         every=SIX_HOURS, needs=DB + NAVER, split=("KR", "US"), chunk=25),
     Job("trends", "검색 관심도", "cmd_trends", {"days": 14}, every=SIX_HOURS, needs=DB, needs_any=NEWS_KEYS),
-    Job("youtube", "유튜브 공개 영상·댓글", "cmd_youtube", {"days": 7, "videos": 5, "comments": 100}, every=DAY,
-        needs=DB + ("YOUTUBE_API_KEY",), split=("KR", "US"), chunk=40, spread=True),
-    # ↑ 검색 1회 100단위(하루 10,000)라 하루 40종목씩 돌아가며 (전 종목 한 바퀴 약 6일)
+    Job("youtube", "유튜브 공개 영상·댓글(대형주)", "cmd_youtube", {"days": 7, "videos": 5, "comments": 100, "top_kr": 40},
+        every=DAY, needs=DB + ("YOUTUBE_API_KEY",)),
+    # ↑ 검색 1회 100단위(하루 10,000)라 영상이 많은 국내 시총 상위 40종목 + 해외 종목만 매일 (약 5,700 + 댓글 수백)
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
@@ -319,8 +318,6 @@ def due_reason(job: Job, st: dict | None, now: datetime, missing: list[str]) -> 
     if last_status == "failed" and finished and now - finished < RETRY_AFTER_FAIL:
         return None
     if st.get("cursor"):
-        if job.spread and job.every and finished and now - finished < job.every - timedelta(minutes=5):
-            return None  # 할당량 때문에 묶음 사이에도 주기를 둠
         return "이어서"
     complete = st.get("last_complete")
     if job.every is ONCE and last_status == "warn" and not st.get("cursor"):

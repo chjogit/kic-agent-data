@@ -638,8 +638,13 @@ def cmd_youtube(args) -> int:
     since = date.today() - timedelta(days=args.days)
     bad = 0
     with db.connect() as conn:
+        top_kr = getattr(args, "top_kr", None)
+        caps = db.market_caps(conn) if top_kr else {}
         for market in ("KR", "US"):
-            for cid, ticker, name, *_ in db.list_companies(conn, market):
+            companies = db.list_companies(conn, market)
+            if market == "KR" and top_kr:  # 할당량 때문에 영상이 많은 시총 상위 종목만
+                companies = sorted(companies, key=lambda c: -caps.get(c[0], 0))[:top_kr]
+            for cid, ticker, name, *_ in companies:
                 term, must = news.terms_for(market, ticker, name)
                 query = f"{term} 주가"
                 try:
@@ -1045,6 +1050,7 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-finnhub"); a.add_argument("--days", type=int, default=7); a.set_defaults(fn=cmd_finnhub)
     a = sub.add_parser("collect-youtube"); a.add_argument("--days", type=int, default=7)
     a.add_argument("--videos", type=int, default=5); a.add_argument("--comments", type=int, default=100)
+    a.add_argument("--top-kr", type=int, default=None, help="국내는 시총 상위 N종목만 (할당량)")
     a.set_defaults(fn=cmd_youtube)
     args = p.parse_args(argv)
     try:
