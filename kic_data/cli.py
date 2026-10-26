@@ -42,8 +42,9 @@ import argparse
 import sys
 from datetime import date, timedelta
 
-from . import db, features, pulse, quarterly, rag, sentiment, status
-from .collectors import community, customs, dart, etf, finnhub, fsc, indices, macro, news, sec, trends, us_prices, youtube
+from . import db, features, krx_sector, pulse, quarterly, rag, sentiment, status
+from .collectors import (community, customs, dart, etf, finnhub, fsc, indices, kospi200, macro, news, sec, trends,
+                         us_prices, youtube)
 from .config import env
 from .http_util import make_session
 from .universe import ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_UNIVERSE
@@ -150,10 +151,15 @@ def cmd_sync_dart(args) -> int:
     return 0
 
 
+BULK_PRICE_DAYS = 31  # 이 기간 이하면 종목별 호출 대신 날짜 범위 전 종목 조회 (KOSPI 200 기준 200회 → 수 회)
+
+
 def cmd_kr_prices(args) -> int:
     s = make_session()
     end, begin = date.today(), date.today() - timedelta(days=args.days)
     bad = 0
+    if args.days <= BULK_PRICE_DAYS:
+        return _kr_prices_bulk(s, begin, end)
     with db.connect() as conn:
         for cid, ticker, *_ in db.list_companies(conn, "KR"):
             # 한 번에 최대 1000행이라 약 330일씩 나눠 호출 (5년치도 누락 없이)
@@ -170,6 +176,37 @@ def cmd_kr_prices(args) -> int:
             n = db.upsert_prices(conn, cid, rows, "fsc")
             _ok(ticker, f"{n}행 (fsc)")
     return 1 if bad else 0
+
+
+def _kr_prices_bulk(s, begin, end) -> int:
+    with db.connect() as conn:
+        companies = db.list_companies(conn, "KR")
+        if not companies:
+            return 0
+        try:
+            rows = fsc.fetch_all_prices(s, ymd(begin), ymd(end))
+        except RuntimeError as exc:
+            _fail("국내 시세(전 종목)", str(exc))
+            return 1
+        by_ticker: dict[str, dict] = {}
+        for r in rows:
+            if r.get("ticker"):
+                by_ticker.setdefault(r["ticker"], {})[r["trade_date"]] = r
+        missing = 0
+        for cid, ticker, *_ in companies:
+            got = by_ticker.get(ticker)
+            if not got:
+                print(f"[WARN] {ticker} 기간 내 시세 없음 (거래정지·상장폐지 확인)")
+                missing += 1
+                continue
+            day_rows = drop_incomplete_today([got[d] for d in sorted(got)], "KR")
+            n = db.upsert_prices(conn, cid, day_rows, "fsc")
+            shares = fsc.latest_shares(day_rows)
+            if shares:
+                db.update_company_info(conn, cid, shares=shares[0], shares_asof=shares[1])
+            _ok(ticker, f"{n}행 (fsc 전 종목 조회)")
+    _ok("국내 시세", f"전 종목 {len(rows)}행 중 {len(companies) - missing}/{len(companies)}종목 반영")
+    return 1 if missing > len(companies) // 10 else 0
 
 
 def cmd_us_prices(args) -> int:
@@ -334,7 +371,11 @@ def cmd_disclosures(args) -> int:
     types = [t.strip() for t in args.types.split(",") if t.strip()]
     tmap = None
     with db.connect() as conn:
-        for cid, ticker, name, corp_code, cik in db.list_companies(conn, "KR"):
+        kr = db.list_companies(conn, "KR")
+        if getattr(args, "bulk", False) and kr:
+            _kr_disclosures_bulk(s, conn, kr, since, types)
+            kr = []
+        for cid, ticker, name, corp_code, cik in kr:
             if not corp_code:
                 print(f"[WARN] {ticker} corp_code 없음 → sync-dart-codes 먼저")
                 continue
@@ -374,6 +415,23 @@ def cmd_customs(args) -> int:
             else:
                 _ok(f"HS {hs}", f"수출 {n1}개월 / 수입 {n2}개월")
     return 0
+
+
+def _kr_disclosures_bulk(s, conn, companies, since, types) -> None:
+    """유가증권·코스닥 시장 전체 공시를 받아 대상 종목만 저장 (종목별 호출 200회 → 수십 쪽)."""
+    by_corp = {corp_code: (cid, ticker) for cid, ticker, _, corp_code, _ in companies if corp_code}
+    counts: dict[str, int] = {}
+    for cls in ("Y", "K"):
+        for ty in types:
+            rows = dart.fetch_disclosures(s, None, ymd(since), ymd(date.today()), ty, max_pages=50, corp_cls=cls)
+            grouped: dict[str, list[dict]] = {}
+            for r in rows:
+                if r.get("corp_code") in by_corp:
+                    grouped.setdefault(r["corp_code"], []).append(r)
+            for corp_code, part in grouped.items():
+                cid, ticker = by_corp[corp_code]
+                counts[ticker] = counts.get(ticker, 0) + db.upsert_disclosures(conn, cid, part, "dart")
+    _ok("KR 공시(시장 전체)", f"{sum(counts.values())}건, {len(counts)}종목 (유형 {','.join(types)})")
 
 
 def cmd_trends(args) -> int:
@@ -450,6 +508,39 @@ def cmd_dart(args) -> int:
                 rows = dart.fetch_financials(s, corp_code, year)
                 _ok(f"{ticker} {year}", f"{db.upsert_facts(conn, cid, rows, 'dart')}행")
     return 0
+
+
+def cmd_dart_multi(args) -> int:
+    """DART 다중회사 주요계정: 100개 회사씩 묶어 연도·보고서별로 한 번에 받습니다 (KOSPI 200 용)."""
+    s = make_session()
+    reports = [r.strip() for r in args.reports.split(",") if r.strip()]
+    last_year = date.today().year if any(r != dart.REPORT_ANNUAL for r in reports) else date.today().year - 1
+    bad = 0
+    with db.connect() as conn:
+        companies = [c for c in db.list_companies(conn, "KR") if c[3]]
+        by_key = {}
+        for cid, ticker, _, corp_code, _ in companies:
+            by_key[ticker] = cid
+            by_key[corp_code] = cid
+        for year in range(args.from_year, last_year + 1):
+            for code in reports:
+                n = got = 0
+                for i in range(0, len(companies), dart.MULTI_MAX):
+                    chunk = [c[3] for c in companies[i:i + dart.MULTI_MAX]]
+                    try:
+                        result = dart.fetch_multi(s, chunk, year, code)
+                    except RuntimeError as exc:
+                        _fail(f"{year} {code}", str(exc))
+                        bad += 1
+                        continue
+                    for key, rows in result.items():
+                        cid = by_key.get(key)
+                        if cid is None:
+                            continue
+                        got += 1
+                        n += db.upsert_facts(conn, cid, rows, "dart")
+                _ok(f"{year} {code}", f"{got}/{len(companies)}개사 {n}행")
+    return 1 if bad else 0
 
 
 def cmd_sec(args) -> int:
@@ -570,6 +661,56 @@ def cmd_youtube(args) -> int:
     return 1 if bad else 0
 
 
+def cmd_probe_bulk(args) -> int:
+    """KOSPI 200·일괄 조회 API 응답만 확인합니다 (DB 에 쓰지 않음, 키 값은 출력하지 않음)."""
+    s = make_session()
+    bad = 0
+    try:
+        members = kospi200.fetch_constituents(s)
+        _ok("KOSPI 200", f"{len(members)}종목, 예: {members[:3]}")
+    except RuntimeError as exc:
+        _fail("KOSPI 200", str(exc)); bad += 1
+    today = date.today()
+    try:
+        rows = fsc.fetch_all_prices(s, ymd(today - timedelta(days=5)), ymd(today))
+        tickers = {r["ticker"] for r in rows}
+        _ok("FSC 전 종목", f"{len(rows)}행, 종목 {len(tickers)}개, 005930 포함={'005930' in tickers}")
+    except RuntimeError as exc:
+        _fail("FSC 전 종목", str(exc)); bad += 1
+    with db.connect() as conn:
+        corps = [c[3] for c in db.list_companies(conn, "KR") if c[3]][:5]
+    try:
+        out = dart.fetch_multi(s, corps, today.year - 1)
+        sample = next(iter(out.values()), [])
+        _ok("DART 다중회사", f"{len(out)}/{len(corps)}개사, 키 예: {list(out)[:3]}, "
+                          f"계정 예: {[(r['fs_div'], r['account_nm'], r['account_id']) for r in sample[:8]]}")
+    except RuntimeError as exc:
+        _fail("DART 다중회사", str(exc)); bad += 1
+    try:
+        rows = dart.fetch_disclosures(s, None, ymd(today - timedelta(days=2)), ymd(today), "A", max_pages=3, corp_cls="Y")
+        _ok("DART 시장 전체 공시", f"{len(rows)}건, corp_code 있음={all(r['corp_code'] for r in rows)}")
+    except RuntimeError as exc:
+        _fail("DART 시장 전체 공시", str(exc)); bad += 1
+    return 1 if bad else 0
+
+
+def cmd_sync_kospi200(args) -> int:
+    """KOSPI 200 구성 종목을 core.company 에 등록하고 index_tags 에 'KOSPI200' 을 표시합니다."""
+    s = make_session()
+    from . import jobs
+
+    members = kospi200.fetch_constituents(s)
+    with db.connect() as conn:
+        before = {t for _, t, *_ in db.list_companies(conn, "KR")}
+        ids = [db.get_or_create_company(conn, "KR", t, n) for t, n in members]
+        db.set_index_members(conn, "KOSPI200", ids, date.today())
+        added = [t for t, _ in members if t not in before]
+        if added:
+            jobs.reset_backfills(conn)
+    _ok("KOSPI 200", f"{len(members)}종목 표시, 새 종목 {len(added)}개" + (" → 종목별 과거분 다시 받기" if added else ""))
+    return 0
+
+
 def cmd_company_info(args) -> int:
     """업종코드(DART KSIC / SEC SIC)와 발행주식수(국내 FSC 상장주식수 / 해외 SEC 표지)를 core.company 에 채웁니다."""
     s = make_session()
@@ -581,7 +722,11 @@ def cmd_company_info(args) -> int:
                 continue
             info = dart.fetch_company(s, corp_code)
             db.update_company_info(conn, cid, sector=info["induty_code"])
-            _ok(f"KR {ticker}", f"KSIC {info['induty_code']}")
+            sector = krx_sector.ksic_to_krx(info["induty_code"], ticker)
+            db.set_krx_sector(conn, cid, sector)
+            _ok(f"KR {ticker}", f"KSIC {info['induty_code']} → KRX 업종 {sector or '-'}")
+            if getattr(args, "skip_kr_shares", False):
+                continue  # 상장주식수는 국내 시세(전 종목 조회) 작업이 매번 갱신
             today = date.today()
             got = fsc.latest_shares(fsc.fetch_prices(s, ticker, ymd(today - timedelta(days=14)), ymd(today), 20))
             if got:
@@ -762,9 +907,22 @@ def cmd_export_features(args) -> int:
     return 0
 
 
+PEER_MAX = 15  # 업종 Peer Group 최대 인원 (시총 큰 순)
+
+
 def cmd_build_peers(args) -> int:
     with db.connect() as conn:
         caps = db.market_caps(conn)
+        # KOSPI 200 업종 Peer Group: 같은 KRX 업종 안의 다른 편입 종목 (시총 순)
+        n_groups = 0
+        for sector, members in db.index_members_by_sector(conn, "KOSPI200").items():
+            for base_cid, _ in members:
+                others = sorted((cid for cid, _ in members if cid != base_cid), key=lambda cid: -caps.get(cid, 0))
+                rows = [(cid, i + 1, f"KOSPI 200 같은 KRX 업종: {sector}") for i, cid in enumerate(others[:PEER_MAX])]
+                if rows:
+                    db.create_peer_group(conn, base_cid, f"krx_sector:{sector}", rows)
+                    n_groups += 1
+        _ok("KOSPI 200 업종 Peer", f"{n_groups}개 그룹")
         for theme, spec in PEER_THEMES.items():
             ids = {}
             for market, ticker in spec["members"]:
@@ -845,7 +1003,8 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-news"); a.add_argument("--days", type=int, default=30); a.add_argument("--max-items", type=int, default=300); a.set_defaults(fn=cmd_news)
     a = sub.add_parser("embed-docs"); a.add_argument("--source", default="naver_news"); a.add_argument("--model", default="bge-m3"); a.add_argument("--batch", type=int, default=64); a.add_argument("--limit", type=int, default=None); a.set_defaults(fn=cmd_embed)
     a = sub.add_parser("collect-indices"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_indices)
-    a = sub.add_parser("collect-disclosures"); a.add_argument("--days", type=int, default=365); a.add_argument("--types", default="A,B,I"); a.set_defaults(fn=cmd_disclosures)
+    a = sub.add_parser("collect-disclosures"); a.add_argument("--days", type=int, default=365); a.add_argument("--types", default="A,B,I")
+    a.add_argument("--bulk", action="store_true", help="국내는 시장 전체 공시에서 대상 종목만 (3개월 이내)"); a.set_defaults(fn=cmd_disclosures)
     a = sub.add_parser("collect-customs"); a.add_argument("--from-ym", default="202101"); a.add_argument("--hs", default="854232,854231"); a.set_defaults(fn=cmd_customs)
     a = sub.add_parser("collect-trends"); a.add_argument("--days", type=int, default=90); a.set_defaults(fn=cmd_trends)
     sub.add_parser("daily-update").set_defaults(fn=cmd_daily)
@@ -870,7 +1029,12 @@ def main(argv=None) -> int:
     a.set_defaults(fn=cmd_sentiment)
     a = sub.add_parser("show-features"); a.add_argument("ticker"); a.set_defaults(fn=cmd_show_features)
     a = sub.add_parser("export-features"); a.add_argument("--out", default="features.json"); a.set_defaults(fn=cmd_export_features)
-    sub.add_parser("collect-company-info").set_defaults(fn=cmd_company_info)
+    a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
+    sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
+    sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
+    a = sub.add_parser("collect-dart-multi"); a.add_argument("--from-year", type=int, default=date.today().year - 5)
+    a.add_argument("--reports", default="11011", help="11011 사업, 11013 1분기, 11012 반기, 11014 3분기")
+    a.set_defaults(fn=cmd_dart_multi)
     sub.add_parser("build-peer-groups").set_defaults(fn=cmd_build_peers)
     sub.add_parser("show-valuation").set_defaults(fn=cmd_show_valuation)
     a = sub.add_parser("collect-macro"); a.add_argument("--years", type=int, default=5); a.set_defaults(fn=cmd_macro)

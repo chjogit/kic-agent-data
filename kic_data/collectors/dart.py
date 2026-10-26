@@ -89,6 +89,69 @@ def fetch_financials(session, corp_code: str, year: int, report_code: str = REPO
     return parse_financials(payload, year, report_code, fs_div)
 
 
+# 다중회사 주요계정(fnlttMultiAcnt): 계정 ID 가 없어 이름으로 단일회사 API 와 같은 ID 를 붙입니다.
+MULTI_MAX = 100  # 한 번에 넣을 수 있는 고유번호 수
+_MULTI_IDS = [
+    (("매출액", "수익(매출액)", "영업수익", "매출"), "ifrs-full_Revenue"),
+    (("영업이익", "영업이익(손실)", "영업손실"), "dart_OperatingIncomeLoss"),
+    (("당기순이익", "당기순이익(손실)", "당기순손실", "분기순이익", "분기순이익(손실)", "반기순이익",
+      "반기순이익(손실)"), "ifrs-full_ProfitLoss"),
+    (("자산총계",), "ifrs-full_Assets"),
+    (("부채총계",), "ifrs-full_Liabilities"),
+    (("자본총계",), "ifrs-full_Equity"),
+]
+
+
+def multi_account_id(account_nm: str) -> str:
+    nm = (account_nm or "").replace(" ", "")
+    for names, aid in _MULTI_IDS:
+        if nm in names:
+            return aid
+    return ""
+
+
+def parse_multi(payload: dict, fiscal_year: int, report_code: str) -> dict[str, list[dict]]:
+    """응답 → {종목코드: [financial_fact 행]}. 연결(CFS)·별도(OFS)를 모두 담습니다."""
+    status = payload.get("status")
+    if status == "013":
+        return {}
+    if status != "000":
+        raise RuntimeError(f"[dart] {status} {STATUS.get(status, payload.get('message', ''))}")
+    out: dict[str, list[dict]] = {}
+    for it in payload.get("list", []):
+        key = (it.get("stock_code") or "").strip() or (it.get("corp_code") or "").strip()
+        if not key:
+            continue
+        out.setdefault(key, []).append(
+            {
+                "fiscal_year": fiscal_year,
+                "report_code": report_code,
+                "fs_div": it.get("fs_div") or "",
+                "sj_div": it.get("sj_div") or "",
+                "account_id": multi_account_id(it.get("account_nm")),
+                "account_nm": it.get("account_nm") or "",
+                "amount": to_decimal(it.get("thstrm_amount")),
+                "amount_ytd": to_decimal(it.get("thstrm_add_amount")),
+                "currency": it.get("currency") or "KRW",
+                "rcept_no": it.get("rcept_no"),
+            }
+        )
+    return out
+
+
+def fetch_multi(session, corp_codes: list[str], year: int, report_code: str = REPORT_ANNUAL) -> dict[str, list[dict]]:
+    if len(corp_codes) > MULTI_MAX:
+        raise ValueError(f"corp_code 는 한 번에 {MULTI_MAX}개까지")
+    params = {
+        "crtfc_key": env("DART_API_KEY", required=True),
+        "corp_code": ",".join(corp_codes),
+        "bsns_year": str(year),
+        "reprt_code": report_code,
+    }
+    payload = get_json(session, "dart", f"{BASE}/fnlttMultiAcnt.json", params=params, limiter=_limiter, timeout=90)
+    return parse_multi(payload, year, report_code)
+
+
 def parse_company(payload: dict) -> dict:
     """기업개황 → 업종코드(KSIC) 등."""
     status = payload.get("status")
@@ -188,17 +251,20 @@ def parse_disclosures(payload: dict, pblntf_ty: str) -> tuple[list[dict], int]:
                 "category": pblntf_ty,
                 "event_type": classify_event(it.get("report_nm")),
                 "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={no}",
+                "corp_code": (it.get("corp_code") or "").strip(),  # 시장 전체 조회에서 회사 구분
             }
         )
     return rows, int(payload.get("total_page") or 1)
 
 
-def fetch_disclosures(session, corp_code: str, bgn_de: str, end_de: str, pblntf_ty: str, max_pages: int = 10) -> list[dict]:
+def fetch_disclosures(session, corp_code: str | None, bgn_de: str, end_de: str, pblntf_ty: str, max_pages: int = 10,
+                      corp_cls: str | None = None) -> list[dict]:
+    """corp_code 없이 corp_cls(Y=유가증권, K=코스닥)를 주면 시장 전체 공시 (기간은 3개월 이내)."""
     rows, page = [], 1
     while page <= max_pages:
         params = {
             "crtfc_key": env("DART_API_KEY", required=True),
-            "corp_code": corp_code,
+            **({"corp_code": corp_code} if corp_code else {"corp_cls": corp_cls or "Y"}),
             "bgn_de": bgn_de,
             "end_de": end_de,
             "pblntf_ty": pblntf_ty,

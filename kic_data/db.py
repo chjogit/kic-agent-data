@@ -420,6 +420,37 @@ def update_company_info(conn, company_id: int, sector=None, sector_desc=None, sh
     conn.commit()
 
 
+def set_index_members(conn, tag: str, company_ids: list[int], asof) -> int:
+    """지수 편입 표시를 다시 씁니다: 이번 목록에 있는 회사만 tag 를 갖습니다 (빠진 회사는 tag 만 지움)."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE core.company SET index_tags = array_remove(index_tags, %s) "
+                    "WHERE %s = ANY(index_tags) AND NOT (company_id = ANY(%s))", [tag, tag, company_ids])
+        cur.execute("UPDATE core.company SET index_tags = array_append(index_tags, %s), index_asof = %s "
+                    "WHERE company_id = ANY(%s) AND NOT (%s = ANY(index_tags))", [tag, asof, company_ids, tag])
+        cur.execute("UPDATE core.company SET index_asof = %s WHERE company_id = ANY(%s)", [asof, company_ids])
+    conn.commit()
+    return len(company_ids)
+
+
+def set_krx_sector(conn, company_id: int, krx_sector: str | None) -> None:
+    with conn.cursor() as cur:
+        cur.execute("UPDATE core.company SET krx_sector = %s WHERE company_id = %s", [krx_sector, company_id])
+    conn.commit()
+
+
+def index_members_by_sector(conn, tag: str) -> dict[str, list[tuple[int, str]]]:
+    """{KRX 업종: [(company_id, ticker)]} — tag 지수 편입 종목만."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT company_id, ticker, krx_sector FROM core.company "
+                    "WHERE %s = ANY(index_tags) AND krx_sector IS NOT NULL ORDER BY ticker", [tag])
+        rows = cur.fetchall()
+    conn.commit()
+    out: dict[str, list[tuple[int, str]]] = {}
+    for cid, ticker, sector in rows:
+        out.setdefault(sector, []).append((cid, ticker))
+    return out
+
+
 def create_peer_group(conn, base_company_id: int, method: str, members: list[tuple]) -> int:
     """같은 기준 종목·방법의 기존 그룹을 지우고 다시 만듭니다. members: [(company_id, rank, reason)]"""
     with conn.cursor() as cur:

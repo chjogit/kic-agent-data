@@ -211,3 +211,73 @@ def test_once_job_retries_after_warn():
     assert jobs.due_reason(job, st, now, []) == "일부 실패 재시도"
     st["last_status"] = "ok"
     assert jobs.due_reason(job, st, now, []) is None
+
+
+# ---------------------------------------------------------------- KOSPI 200 확대
+
+def test_parse_kospi200_entry_page():
+    from kic_data.collectors import kospi200
+    html = ('<td class="ctg"><a href="/item/main.naver?code=005930" target="_parent">삼성전자</a></td>'
+            '<td><a href="/item/main.naver?code=000660" target="_parent">SK하이닉스</a></td>'
+            '<a href="/item/main.naver?code=005930">삼성전자</a>')
+    assert kospi200.parse_entry_page(html) == [("005930", "삼성전자"), ("000660", "SK하이닉스")]
+
+
+def test_ksic_to_krx_sector():
+    from kic_data import krx_sector
+    assert len(krx_sector.KRX_SECTORS) == 26
+    assert set(krx_sector._PREFIX.values()) <= set(krx_sector.KRX_SECTORS)
+    assert krx_sector.ksic_to_krx("264") == "전기·전자"
+    assert krx_sector.ksic_to_krx("64992") == "기타금융"  # 지주회사
+    assert krx_sector.ksic_to_krx("64121") == "은행"
+    assert krx_sector.ksic_to_krx("66121") == "증권"
+    assert krx_sector.ksic_to_krx("63120") == "IT 서비스"
+    assert krx_sector.ksic_to_krx("") is None
+
+
+def test_fsc_parse_keeps_ticker_for_bulk():
+    from kic_data.collectors import fsc
+    payload = {"response": {"header": {"resultCode": "00"}, "body": {"totalCount": 2, "items": {"item": [
+        {"basDt": "20261023", "srtnCd": "005930", "clpr": "70000", "lstgStCnt": "100"},
+        {"basDt": "20261023", "srtnCd": "A000660", "clpr": "200000"}]}}}}
+    rows = fsc.parse_prices(payload)
+    assert [r["ticker"] for r in rows] == ["005930", "000660"]
+    assert fsc.total_count(payload) == 2
+
+
+def test_dart_parse_multi_maps_accounts():
+    payload = {"status": "000", "list": [
+        {"stock_code": "005930", "fs_div": "CFS", "sj_div": "IS", "account_nm": "매출액",
+         "thstrm_amount": "1,000", "thstrm_add_amount": "3,000", "rcept_no": "1"},
+        {"stock_code": "005930", "fs_div": "CFS", "sj_div": "BS", "account_nm": "자산총계", "thstrm_amount": "5,000"},
+        {"stock_code": "000660", "fs_div": "OFS", "sj_div": "IS", "account_nm": "당기순이익(손실)", "thstrm_amount": "-10"},
+    ]}
+    from kic_data.collectors import dart
+    out = dart.parse_multi(payload, 2025, "11012")
+    assert set(out) == {"005930", "000660"}
+    rev = out["005930"][0]
+    assert rev["account_id"] == "ifrs-full_Revenue" and rev["amount_ytd"] is not None and rev["report_code"] == "11012"
+    assert out["005930"][1]["account_id"] == "ifrs-full_Assets"
+    assert out["000660"][0]["account_id"] == "ifrs-full_ProfitLoss" and out["000660"][0]["fs_div"] == "OFS"
+    assert dart.parse_multi({"status": "013"}, 2025, "11011") == {}
+
+
+def test_spread_job_waits_between_chunks():
+    job = jobs.JOB_BY_NAME["youtube"]
+    now = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
+    st = {"last_status": "partial", "cursor": 40, "last_finished": now - timedelta(hours=2), "last_complete": None}
+    assert jobs.due_reason(job, st, now, []) is None
+    st["last_finished"] = now - timedelta(days=1)
+    assert jobs.due_reason(job, st, now, []) == "이어서"
+    news = jobs.JOB_BY_NAME["news"]  # 보통 작업은 남은 묶음을 바로 이어서
+    assert jobs.due_reason(news, {**st, "last_finished": now - timedelta(minutes=50)}, now, []) == "이어서"
+
+
+def test_kospi200_jobs_wired():
+    names = [j.name for j in jobs.JOBS]
+    assert names.index("sync-kospi200") < names.index("sync-dart-codes")
+    assert set(jobs.PER_TICKER_BACKFILLS) <= set(names)
+    assert not jobs.JOB_BY_NAME["kr-prices"].split  # 전 종목 조회
+    from kic_data import cli
+    for j in jobs.JOBS:
+        assert hasattr(cli, j.command), j.command
