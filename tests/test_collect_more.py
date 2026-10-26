@@ -134,6 +134,28 @@ class CustomsTest(unittest.TestCase):
         rows = customs.parse_trade_xml(self.XML)
         self.assertEqual(rows, [(date(2026, 7, 1), Decimal("12345678"), Decimal("2000"))])
 
+    def test_parse_sums_sub_items(self):
+        xml = """<response><header><resultCode>00</resultCode></header><body><items>
+          <item><year>2026.07</year><hsCd>8542321010</hsCd><expDlr>100</expDlr><impDlr>10</impDlr></item>
+          <item><year>2026.07</year><hsCd>8542321020</hsCd><expDlr>50</expDlr><impDlr>5</impDlr></item>
+          <item><year>2026.06</year><hsCd>8542321010</hsCd><expDlr>70</expDlr><impDlr>-</impDlr></item>
+        </items></body></response>"""
+        self.assertEqual(customs.parse_trade_xml(xml, "854232"),
+                         [(date(2026, 6, 1), Decimal("70"), None), (date(2026, 7, 1), Decimal("150"), Decimal("15"))])
+
+    def test_parse_prefers_exact_code(self):
+        xml = """<response><body><items>
+          <item><year>2026.07</year><hsCd>854232</hsCd><expDlr>150</expDlr><impDlr>15</impDlr></item>
+          <item><year>2026.07</year><hsCd>8542321010</hsCd><expDlr>100</expDlr><impDlr>10</impDlr></item>
+        </items></body></response>"""
+        self.assertEqual(customs.parse_trade_xml(xml, "854232"), [(date(2026, 7, 1), Decimal("150"), Decimal("15"))])
+
+    def test_month_windows(self):
+        self.assertEqual(customs.month_windows(date(2021, 1, 1), date(2022, 3, 15)),
+                         [("202101", "202112"), ("202201", "202203")])
+        self.assertEqual(customs.month_windows(date(2025, 9, 1), date(2026, 10, 26)),
+                         [("202509", "202608"), ("202609", "202610")])
+
     def test_error(self):
         with self.assertRaises(RuntimeError):
             customs.parse_trade_xml("<response><header><resultCode>30</resultCode><resultMsg>키 오류</resultMsg></header></response>")

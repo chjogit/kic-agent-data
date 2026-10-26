@@ -356,13 +356,14 @@ def cmd_disclosures(args) -> int:
 
 def cmd_customs(args) -> int:
     s = make_session()
-    start = date(int(args.from_ym[:4]), int(args.from_ym[4:6]), 1)
+    from_ym = str(args.from_ym)
+    start = date(int(from_ym[:4]), int(from_ym[4:6]), 1)
     today = date.today()
     with db.connect() as conn:
         for hs in [h.strip() for h in args.hs.split(",") if h.strip()]:
             exp_rows, imp_rows = {}, {}
-            for a, b in date_windows(start, today, 360):
-                for d, exp, imp in customs.fetch_trade(s, hs, a.strftime("%Y%m"), b.strftime("%Y%m")):
+            for a, b in customs.month_windows(start, today):  # 1회 조회 1년 이내
+                for d, exp, imp in customs.fetch_trade(s, hs, a, b):
                     exp_rows[d], imp_rows[d] = exp, imp
             label = customs.HS_NAMES.get(hs, f"HS {hs}")
             n1 = db.upsert_macro(conn, f"KCS_EXP_{hs}_USD", f"{label} 수출금액(USD)", "kcs", "M", sorted(exp_rows.items()))
