@@ -488,6 +488,16 @@ def _summary(log: str, status: str, tickers: str | None, complete: bool) -> str:
 
 
 MORE = 3  # 명령이 이 값을 돌려주면 '아직 남음': 다음 실행에서 이어서 (예: cmd_dart_multi 시간 예산)
+STARVE_GRACE = timedelta(hours=2)  # 하루 주기 이상 작업이 이만큼 더 밀리면 다음 실행에서 맨 앞으로
+
+
+def starved(job: "Job", st: dict | None, now: datetime) -> bool:
+    """예산이 앞쪽 작업에 다 쓰여 뒤쪽의 하루·주 단위 작업이 계속 밀리는지 (10/27: 분기 TTM·유튜브가 하루 넘게 밀림)."""
+    complete = (st or {}).get("last_complete")
+    return (job.every is not ONCE and job.every >= DAY and complete is not None
+            and now - complete >= job.every + STARVE_GRACE)
+
+
 BACKFILL_SHARE = 0.5  # 과거분이 예산을 다 쓰면 매시간 시세·공시가 밀리므로 절반까지만
 
 
@@ -499,7 +509,9 @@ def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 2
     t0 = clock()
     ran, waiting = [], []
     states = state.all()
-    for job in JOBS:
+    now = _now()
+    order = sorted(JOBS, key=lambda j: 0 if starved(j, states.get(j.name), now) else 1)  # 안정 정렬: 나머지 순서는 그대로
+    for job in order:
         if only and job.group != only and job.name != only:
             continue
         if lane and lane_of(job) != lane:

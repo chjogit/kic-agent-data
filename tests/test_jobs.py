@@ -471,3 +471,27 @@ def test_workflow_matrix_matches_collect_lanes():
     text = (Path(__file__).resolve().parents[1] / ".github/workflows/collect.yml").read_text(encoding="utf-8")
     assert f"lane: [{', '.join(jobs.COLLECT_LANES)}]" in text
     assert f"--lane {jobs.PREP_LANE}" in text and f"--lane {jobs.CALC_LANE}" in text
+
+
+def test_tick_runs_starved_daily_job_first(monkeypatch):
+    clock = {"t": 0.0}
+    calls = []
+
+    def step(name):
+        def fn(ns):
+            calls.append(name)
+            clock["t"] += 100
+        return fn
+
+    hourly = jobs.Job("h", "h", "cmd_h")
+    daily = jobs.Job("d", "d", "cmd_d", every=jobs.DAY)
+    monkeypatch.setattr(jobs, "JOBS", [hourly, daily])
+    now = jobs._now()
+    st = MemState()
+    st.rows["h"] = {"cursor": 0, "last_status": "ok", "last_complete": now - timedelta(hours=2), "last_seconds": 100}
+    st.rows["d"] = {"cursor": 0, "last_status": "ok", "last_complete": now - timedelta(hours=30), "last_seconds": 100}
+    res = jobs.tick(st, budget=90, hard_limit=280, commands=SimpleNamespace(cmd_h=step("h"), cmd_d=step("d")),
+                    getenv=env_all, clock=lambda: clock["t"])
+    assert calls == ["d"] and res["waiting"] == ["h"]          # 30시간 밀린 하루 작업이 먼저
+    assert not jobs.starved(daily, {"last_complete": now - timedelta(hours=25)}, now)   # 2시간 여유 안쪽은 원래 순서
+    assert not jobs.starved(hourly, st.rows["h"], now)
