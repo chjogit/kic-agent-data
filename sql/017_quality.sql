@@ -47,7 +47,7 @@ COMMENT ON SCHEMA quality IS '데이터 품질 체크 및 이상 이벤트 기�
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kic_readonly') THEN
-        GRANT USAGE ON SCHEMA core, ops, quality TO kic_readonly;
-        GRANT SELECT ON ALL TABLES IN SCHEMA core, ops, quality TO kic_readonly;
+        GRANT USAGE ON SCHEMA core, ops, quality, rag TO kic_readonly;
+        GRANT SELECT ON ALL TABLES IN SCHEMA core, ops, quality, rag TO kic_readonly;
     END IF;
 END $$;

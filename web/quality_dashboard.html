@@ -3,66 +3,115 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KIC Data Quality Dashboard</title>
+<title>KIC 데이터 품질</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <style>
   :root {
-    --bg: #0f1419; --card: #1a2332; --border: #2d3a4d;
-    --text: #e6edf3; --dim: #8b949e;
-    --ok: #22c55e; --warn: #eab308; --error: #ef4444; --accent: #60a5fa;
+    --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f1f3f6; --border: #e4e7ec;
+    --text: #101828; --dim: #667085; --faint: #98a2b3;
+    --accent: #3b5bdb; --accent-soft: #edf0ff;
+    --ok: #12855b; --ok-soft: #e6f6ee; --warn: #b54708; --warn-soft: #fef4e6; --error: #c4320a; --error-soft: #fef0ec;
+    --unknown: #98a2b3; --shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d12; --surface: #13161d; --surface-2: #1a1e27; --border: #262b36;
+      --text: #eef0f4; --dim: #98a2b3; --faint: #667085;
+      --accent: #8ea2ff; --accent-soft: #1c2240;
+      --ok: #47cd89; --ok-soft: #10281d; --warn: #fdb022; --warn-soft: #2e2210; --error: #f97066; --error-soft: #2f1512;
+      --unknown: #667085; --shadow: 0 1px 2px rgba(0,0,0,.3);
+    }
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); }
-  header { background: #1e3a5f; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
-  header h1 { font-size: 1.25rem; }
-  .nav button { background: transparent; border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; margin-left: 0.25rem; }
-  .nav button.active, .nav button:hover { background: var(--accent); border-color: var(--accent); }
-  main { padding: 1.25rem; max-width: 1200px; margin: 0 auto; }
-  .section { display: none; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+         background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 82%, transparent);
+           backdrop-filter: saturate(160%) blur(12px); -webkit-backdrop-filter: saturate(160%) blur(12px); border-bottom: 1px solid var(--border); }
+  .bar { max-width: 1200px; margin: 0 auto; padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .logo { width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), #7c3aed); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 13px; }
+  header h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+  header h1 small { display: block; font-size: 12px; font-weight: 500; color: var(--dim); }
+  .nav { display: flex; align-items: center; gap: 4px; background: var(--surface-2); padding: 4px; border-radius: 12px; overflow-x: auto; max-width: 100%; }
+  .nav button { border: 0; background: transparent; color: var(--dim); font: inherit; font-weight: 600; font-size: 13px; padding: 7px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s; }
+  .nav button:hover { color: var(--text); }
+  .nav button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .navlink { color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; padding: 7px 10px; white-space: nowrap; }
+  main { padding: 24px 20px 64px; max-width: 1200px; margin: 0 auto; }
+  .section { display: none; animation: fade .2s ease; }
   .section.active { display: block; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; cursor: pointer; }
-  .card:hover { border-color: var(--accent); }
-  .light { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-  .light.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
-  .light.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
-  .light.error { background: var(--error); box-shadow: 0 0 6px var(--error); }
-  .light.unknown { background: #6b7280; }
-  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; }
-  th, td { padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
-  th { background: #243044; }
-  .badge { padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; }
-  .badge.ok { background: rgba(34,197,94,.2); color: var(--ok); }
-  .badge.warn { background: rgba(234,179,8,.2); color: var(--warn); }
-  .badge.error { background: rgba(239,68,68,.2); color: var(--error); }
-  .info { background: var(--card); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem; color: var(--dim); }
-  #detail { margin-top: 1rem; }
-  .navlink { color: var(--text); margin-left: 0.75rem; font-size: 0.9rem; text-decoration: none; }
-  .table-wrap { overflow-x: auto; }
-  .back { color: var(--accent); cursor: pointer; font-size: 0.9rem; margin-bottom: 0.5rem; display: inline-block; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .info { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  .info b { color: var(--text); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); transition: border-color .15s, transform .15s; }
+  .grid .card { cursor: pointer; }
+  .grid .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .grid.static .card { cursor: default; border-color: var(--border); transform: none; }
+  .card strong { font-weight: 650; font-size: 15px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+  .kpi .label { font-size: 12px; color: var(--dim); font-weight: 600; }
+  .kpi .value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi.ok .value { color: var(--ok); } .kpi.warn .value { color: var(--warn); } .kpi.error .value { color: var(--error); }
+  .light { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; vertical-align: middle; }
+  .light.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+  .light.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+  .light.error { background: var(--error); box-shadow: 0 0 0 3px var(--error-soft); }
+  .light.unknown { background: var(--unknown); box-shadow: 0 0 0 3px var(--surface-2); }
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: var(--surface-2); }
+  th { font-size: 12px; font-weight: 600; color: var(--dim); background: var(--surface-2); white-space: nowrap; }
+  td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.error { background: var(--error-soft); color: var(--error); }
+  .badge.unknown { background: var(--surface-2); color: var(--dim); }
+  .fresh-ok { color: var(--ok); font-weight: 600; } .fresh-bad { color: var(--warn); font-weight: 600; } .fresh-none { color: var(--error); font-weight: 600; }
+  h3, h3.sub { margin: 28px 0 10px; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+  h4 { font-size: 13px; color: var(--dim); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+  .back { color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 8px; display: inline-block; }
+  #api-detail .card, #api-detail { margin-top: 4px; }
+  #api-detail p { margin: 4px 0; }
+  #api-detail ul { margin-top: 6px; }
+  @media (max-width: 640px) { .bar { padding: 12px 16px; } main { padding: 16px 16px 48px; } .kpi .value { font-size: 22px; } }
 </style>
 </head>
 <body>
 <header>
-  <h1>KIC Data Quality Dashboard</h1>
-  <nav class="nav">
-    <button data-sec="overview" class="active" onclick="show('overview')">개요</button>
-    <button data-sec="apis" onclick="show('apis')">API 상태</button>
-    <button data-sec="schemas" onclick="show('schemas')">스키마</button>
-    <button data-sec="anomalies" onclick="show('anomalies')">이상 이벤트</button>
-    <a class="navlink" href="/">수집 작업 →</a>
-  </nav>
+  <div class="bar">
+    <div class="brand"><div class="logo">KIC</div><h1>데이터 품질<small>수집 상태 · API · 데이터 현황</small></h1></div>
+    <nav class="nav">
+      <button data-sec="overview" class="active" onclick="show('overview')">개요</button>
+      <button data-sec="data" onclick="show('data')">데이터 현황</button>
+      <button data-sec="apis" onclick="show('apis')">API 상태</button>
+      <button data-sec="schemas" onclick="show('schemas')">스키마</button>
+      <button data-sec="anomalies" onclick="show('anomalies')">이상 이벤트</button>
+      <a class="navlink" href="/">수집 작업 →</a>
+    </nav>
+  </div>
 </header>
 <main>
   <div class="info">
-    수집 작업(GitHub Actions 매시 7분)이 끝날 때마다 원천 API 상태와 실패·일부 실패를 기록합니다. 시각은 한국시간(KST).
-    마지막 갱신: <span id="updated">—</span>
-    <div id="sample-note" style="display:none;color:var(--warn);margin-top:4px;">API 에 연결하지 못해 샘플 데이터를 보여 주고 있습니다.</div>
+    <span>마지막 갱신 <b id="updated">—</b> KST</span>
+    <span>수집 작업(GitHub Actions 매시 7분)이 끝날 때마다 원천 API 상태와 실패를 기록합니다</span>
+    <span id="sample-note" style="display:none;color:var(--warn);font-weight:600;">API 에 연결하지 못해 샘플 데이터를 보여 주고 있습니다</span>
   </div>
 
   <section id="overview" class="section active">
+    <div class="kpis" id="overview-kpis"></div>
+    <h3 style="margin-top:0;">원천 API</h3>
     <div class="grid" id="overview-cards"></div>
-    <h3 style="margin-bottom:0.5rem; font-size:1rem;">최근 이상 (24h)</h3>
-    <div id="anomaly-summary"></div>
+  </section>
+
+  <section id="data" class="section">
+    <div id="data-body"><p style="color:var(--dim);">불러오는 중… (DB 를 직접 세므로 몇 초 걸립니다)</p></div>
   </section>
 
   <section id="apis" class="section">
@@ -143,13 +192,12 @@ async function loadOverview() {
     </div>
   `).join('');
   const ac = data.anomalies_24h || {};
-  document.getElementById('anomaly-summary').innerHTML = `
-    <div style="display:flex;gap:1rem;">
-      <div>warn: <strong>${esc(ac.warn || 0)}</strong></div>
-      <div>error: <strong>${esc(ac.error || 0)}</strong></div>
-      <a href="#" style="color:var(--accent);" onclick="show('anomalies');return false;">목록 보기</a>
-    </div>
-  `;
+  const cnt = st => (data.apis || []).filter(a => a.status === st).length;
+  document.getElementById('overview-kpis').innerHTML = [
+    ['정상 API', cnt('ok'), 'ok'], ['주의 API', cnt('warn'), 'warn'], ['오류 API', cnt('error'), 'error'],
+    ['24시간 경고', ac.warn || 0, (ac.warn ? 'warn' : '')], ['24시간 오류', ac.error || 0, (ac.error ? 'error' : '')],
+  ].map(([l, v, c]) => `<div class="kpi ${c}" ${l.startsWith('24') ? `style="cursor:pointer" onclick="show('anomalies')"` : ''}>
+      <div class="label">${l}</div><div class="value">${esc(v)}</div></div>`).join('');
 }
 
 async function loadApis() {
@@ -222,12 +270,63 @@ async function loadAnomalies() {
     : `<tr><td colspan="6" style="color:var(--dim);">${d ? '이상 이벤트 없음' : 'API 미연결'}</td></tr>`;
 }
 
+function freshCls(f) {
+  if (f === 'OK') return 'fresh-ok';
+  if (f === '없음') return 'fresh-none';
+  if (f && f.startsWith('오래됨')) return 'fresh-bad';
+  return '';
+}
+const num = v => v == null ? '—' : Number(v).toLocaleString('ko-KR');
+function table(head, rows) {
+  return `<div class="table-wrap"><table><thead><tr>${head.map(h => `<th${h.num ? ' class="num"' : ''}>${esc(h.t || h)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.join('') || `<tr><td colspan="${head.length}" style="color:var(--dim);">없음</td></tr>`}</tbody></table></div>`;
+}
+
+async function loadData() {
+  const el = document.getElementById('data-body');
+  const d = await fetchJSON('/api/quality/data');
+  if (!d) { el.innerHTML = '<p style="color:var(--dim);">데이터 현황을 불러올 수 없습니다. (/api/quality/data)</p>'; return; }
+  const m = d.master;
+  el.innerHTML = `
+    <div class="grid static">
+      <div class="card"><strong>종목</strong><div style="margin-top:6px;font-size:0.9rem;">${num(m.total)}개 (국내 ${num(m.kr)} · 해외 ${num(m.us)})</div>
+        <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">DART 고유번호 ${num(m.kr_dart_code)}/${num(m.kr)} · CIK ${num(m.us_cik)}/${num(m.us)}<br>업종 ${num(m.sector)}/${num(m.total)} · 발행주식수 ${num(m.shares)}/${num(m.total)}</div></div>
+      <div class="card"><strong>거시 시리즈</strong><div style="margin-top:6px;font-size:0.9rem;">${num(d.macro.length)}개</div>
+        <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">기준보다 오래된 시리즈 ${num(d.macro_stale)}개</div></div>
+      <div class="card"><strong>Peer Group</strong><div style="margin-top:6px;font-size:0.9rem;">${num(d.peer_groups)}개</div>
+        <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">기준일 ${esc(d.checked_at)}</div></div>
+    </div>
+    <h3 class="sub">데이터 종류별</h3>
+    ${table(['데이터', {t:'종목 커버리지', num:1}, {t:'오래된 종목', num:1}, {t:'건수', num:1}, '최신', '최신성'], d.datasets.map(x => `<tr>
+      <td>${esc(x.name)}</td><td class="num">${num(x.covered)}/${num(x.total)}</td>
+      <td class="num ${x.stale ? 'fresh-bad' : ''}">${num(x.stale)}</td><td class="num">${num(x.rows)}</td>
+      <td>${ts(x.latest)}</td><td class="${freshCls(x.freshness)}">${esc(x.freshness)}</td></tr>`))}
+    <h3 class="sub">시장 지수</h3>
+    ${table(['지수', '이름', {t:'행', num:1}, '기간', '최신성'], d.indices.map(x => `<tr>
+      <td>${esc(x.symbol)}</td><td>${esc(x.name||'')}</td><td class="num">${num(x.rows)}</td>
+      <td>${ts(x.from)} ~ ${ts(x.to)}</td><td class="${freshCls(x.freshness)}">${esc(x.freshness)}</td></tr>`))}
+    <h3 class="sub">거시지표</h3>
+    ${table(['시리즈', '이름', '출처', '주기', {t:'행', num:1}, '최신', '최신성'], d.macro.map(x => `<tr>
+      <td>${esc(x.series_id)}</td><td>${esc(x.name||'')}</td><td>${esc(x.source||'')}</td><td>${esc(x.frequency||'')}</td>
+      <td class="num">${num(x.rows)}</td><td>${ts(x.to)}</td><td class="${freshCls(x.freshness)}">${esc(x.freshness)}</td></tr>`))}
+    <h3 class="sub">문서 (뉴스·블로그·카페·유튜브 등)</h3>
+    ${table(['출처', {t:'건수', num:1}, {t:'종목', num:1}, '기간', {t:'청크', num:1}], d.documents.map(x => `<tr>
+      <td>${esc(x.source)}</td><td class="num">${num(x.docs)}</td><td class="num">${num(x.companies)}</td>
+      <td>${ts(x.from)} ~ ${ts(x.to)}</td><td class="num">${num(x.chunks)}</td></tr>`))}
+    <h3 class="sub">공시</h3>
+    ${table(['출처', '유형', {t:'건수', num:1}, {t:'미분류', num:1}, '기간'], d.disclosures.map(x => `<tr>
+      <td>${esc(x.source)}</td><td>${esc(x.category||'')}</td><td class="num">${num(x.rows)}</td>
+      <td class="num">${num(x.unclassified)}</td><td>${ts(x.from)} ~ ${ts(x.to)}</td></tr>`))}
+  `;
+}
+
 function show(id) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.sec === id));
   document.getElementById(id).classList.add('active');
   if (id === 'overview') return loadOverview();
   if (id === 'apis') return loadApis();
+  if (id === 'data') return loadData();
   if (id === 'anomalies') return loadAnomalies();
   return Promise.resolve();
 }
