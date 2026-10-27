@@ -615,6 +615,8 @@ def _probe_extract(args) -> int:
                 print(f"{ticker} {name}: 사업보고서 없음")
                 continue
             fy = reports[0][1]
+            revenue = db.annual_revenue(conn, cid, fy)
+            conn.commit()  # 원문을 받는 동안 읽기 트랜잭션을 쥐고 있지 않게
             files = None
             for rc, y, _ in reports:
                 if y != fy:
@@ -627,7 +629,7 @@ def _probe_extract(args) -> int:
             if not files:
                 continue
             n += 1
-            res = exposure_parse.extract(files, db.annual_revenue(conn, cid, fy))
+            res = exposure_parse.extract(files, revenue)
             for k in res["found"]:
                 stats[k] = stats.get(k, 0) + 1
             ms = {(m.metric, m.currency): m for m in res["metrics"]}
@@ -671,6 +673,7 @@ def cmd_probe_dart_doc(args) -> int:
                 "WHERE c.market = 'KR' AND c.ticker = %s AND d.event_type = 'annual_report' "
                 "ORDER BY d.rcept_dt DESC, d.rcept_no DESC LIMIT 1", [t])
             row = cur.fetchone()
+            conn.commit()  # 원문을 받는 동안 읽기 트랜잭션을 쥐고 있지 않게
             if not row:
                 print(f"\n##### {t}: 사업보고서 접수번호 없음")
                 continue
@@ -713,6 +716,7 @@ def cmd_report_exposure(args) -> int:
             fy = reports[0][1]
             if not getattr(args, "force", False) and db.report_parsed(conn, cid, fy) in {r[0] for r in reports if r[1] == fy}:
                 continue
+            conn.commit()  # 원문(약 10MB)을 받는 동안 읽기 트랜잭션을 쥐고 있지 않게 (apply-schema 잠금 대기 방지)
             files, rcept, rdt, last_err = None, None, None, ""
             for rc, y, dt in reports:
                 if y != fy:
@@ -734,8 +738,99 @@ def cmd_report_exposure(args) -> int:
                     "title": f"FY{fy} 사업보고서 · 환위험 관리", "published_at": rdt,
                     "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}#fx-risk",
                     "summary": res["risk_text"][:500]}])
+            if res.get("price_text"):   # 판가 전가력은 숫자로 바꾸지 않고 원문 발췌만 근거로 둠
+                db.upsert_documents(conn, cid, "dart_report", [{
+                    "title": f"FY{fy} 사업보고서 · 가격변동 추이({i + 1})", "published_at": rdt,
+                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}#price-{i + 1}",
+                    "summary": txt[:500]} for i, txt in enumerate(res["price_text"])])
             _ok(f"KR:{ticker}", f"FY{fy} {rcept} 지표 {n}개 ({', '.join(res['found']) or '찾지 못함'})")
     return 1 if bad else 0
+
+
+# 정기보고서 기말일 (12월 결산 기준. KOSPI 200 대부분이 12월 결산)
+PERIOD_END = {"11013": (3, 31), "11012": (6, 30), "11014": (9, 30), "11011": (12, 31)}
+DEBT_APIS = ("bond", "cp", "stb", "issue", "receivable")
+
+
+def periodic_targets(today: date) -> list[tuple[int, str]]:
+    """받을 보고서: 제출 기한이 지난 가장 최근 정기보고서 + 가장 최근 사업보고서 (같으면 하나)."""
+    order = []
+    for y in (today.year, today.year - 1, today.year - 2):
+        order += [(y, "11014"), (y, "11012"), (y, "11013")] if y == today.year else \
+                 [(y, "11011"), (y, "11014"), (y, "11012"), (y, "11013")]
+    due = [t for t in order if report_due(*t, today)]
+    annual = next(t for t in due if t[1] == dart.REPORT_ANNUAL)
+    return list(dict.fromkeys([due[0], annual]))
+
+
+def _fetch_periodic(s, api: str, corp_code: str, year: int, code: str) -> list[dict]:
+    from .collectors import dart_periodic
+
+    if api == "issue":
+        return dart_periodic.fetch_issues(s, corp_code, year, code)
+    if api != "receivable":
+        return dart_periodic.fetch_balance(s, api, corp_code, year, code)
+    m, d = PERIOD_END[code]
+    for fs_div in ("CFS", "OFS"):  # 종속회사가 없으면 연결 재무제표가 없음
+        r = dart_periodic.pick_receivable(dart.fetch_financials(s, corp_code, year, report_code=code, fs_div=fs_div))
+        if r:
+            return [{**r, "period_end": date(year, m, d)}]
+    return []
+
+
+def cmd_debt_terms(args) -> int:
+    """차입 조건(회사채·CP·단기사채 미상환 잔액 만기 구간, 채무증권 발행 이자율)과 매출채권(DSO 용)을
+    OpenDART 정기보고서 주요정보·전체 재무제표에서 받습니다. 이미 받은 보고서는 건너뜁니다.
+    DB 는 읽은 뒤 바로 커밋해 원천 API 를 기다리는 동안 트랜잭션(잠금)을 쥐고 있지 않습니다."""
+    s = make_session()
+    targets = periodic_targets(date.today())
+    apis = [a.strip() for a in (getattr(args, "apis", None) or ",".join(DEBT_APIS)).split(",") if a.strip()]
+    bad = 0
+    with db.connect() as conn:
+        companies = [c for c in db.list_companies(conn, "KR") if c[3]]
+        conn.commit()
+        for cid, ticker, _, corp_code, _ in companies:
+            done = set() if getattr(args, "force", False) else db.periodic_fetched(conn, cid)
+            conn.commit()
+            got = []
+            for year, code in targets:
+                for api in apis:
+                    if (api, year, code) in done:
+                        continue
+                    try:
+                        rows = _fetch_periodic(s, api, corp_code, year, code)
+                    except RuntimeError as exc:
+                        _fail(f"KR:{ticker}", f"{api} {year} {code}: {exc}")
+                        bad += 1
+                        continue
+                    db.save_periodic(conn, cid, api, year, code, rows)
+                    got.append(f"{api} {year}/{code} {len(rows)}")
+            if got:
+                _ok(f"KR:{ticker}", ", ".join(got))
+    return 1 if bad else 0
+
+
+def cmd_probe_dart_debt(args) -> int:
+    """차입 조건·매출채권 API 응답을 몇 종목만 받아 출력합니다 (DB 에 쓰지 않음, 단위·행 이름 확인용)."""
+    s = make_session()
+    want = {t.strip() for t in args.tickers.split(",") if t.strip()}
+    with db.connect() as conn:
+        companies = [c for c in db.list_companies(conn, "KR") if c[1] in want and c[3]]
+        conn.commit()
+    targets = periodic_targets(date.today())
+    for cid, ticker, name, corp_code, _ in companies:
+        for year, code in targets:
+            for api in DEBT_APIS:
+                try:
+                    rows = _fetch_periodic(s, api, corp_code, year, code)
+                except RuntimeError as exc:
+                    print(f"{ticker} {name} {api} {year}/{code}: {exc}")
+                    continue
+                print(f"{ticker} {name} {api} {year}/{code}: {len(rows)}행")
+                for r in rows[:12]:
+                    print("    ", {k: (str(v) if v is not None else None) for k, v in r.items()
+                                   if k not in ("rcept_no", "sj_div", "currency")})
+    return 0
 
 
 def cmd_sec(args) -> int:
@@ -1315,9 +1410,16 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
-    a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율 민감도·외화 자산부채·수출 비중·외환 파생")
+    a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율·이자율 민감도·외화 자산부채·수출 비중·외환 파생·가격변동 발췌")
     a.add_argument("--force", action="store_true", help="이미 읽은 원문도 다시")
     a.set_defaults(fn=cmd_report_exposure)
+    a = sub.add_parser("collect-debt-terms", help="회사채·CP·단기사채 미상환 잔액, 채무증권 발행 이자율, 매출채권 (OpenDART)")
+    a.add_argument("--apis", default=None, help="bond,cp,stb,issue,receivable 중 일부만")
+    a.add_argument("--force", action="store_true", help="이미 받은 보고서도 다시")
+    a.set_defaults(fn=cmd_debt_terms)
+    a = sub.add_parser("probe-dart-debt", help="차입 조건·매출채권 API 응답 출력 (DB 에 쓰지 않음)")
+    a.add_argument("--tickers", default="005930,000660,005380,051910,017670")
+    a.set_defaults(fn=cmd_probe_dart_debt)
     a = sub.add_parser("probe-dart-doc", help="사업보고서 원문의 노출 관련 표 모양 출력 (DB에 쓰지 않음)")
     a.add_argument("--tickers", default="005930,005380,051910,017670,105560,000660,035420,068270")
     a.add_argument("--max-tables", type=int, default=25)

@@ -1,0 +1,135 @@
+"""OpenDART 정기보고서 주요정보(DS002) 중 차입 조건 + 전체 재무제표의 매출채권.
+
+출처: 금융감독원 OpenDART (https://opendart.fss.or.kr/guide/main.do?apiGrpCd=DS002), 키 DART_API_KEY,
+      하루 20,000회 한도(키당). 2015년 이후 사업·반기·분기보고서 기준.
+
+엔드포인트 (공식 개발가이드에서 이름·응답 필드 확인, 2026-10-27)
+- cprndNrdmpBlce.json            회사채 미상환 잔액 (잔여만기 1년 이하 ~ 10년 초과)
+- entrprsBilScritsNrdmpBlce.json 기업어음증권(CP) 미상환 잔액 (10일 이하 ~ 3년 초과)
+- srtpdPsndbtNrdmpBlce.json      단기사채 미상환 잔액 (10일 이하 ~ 1년 이하, 발행·잔여 한도)
+- detScritsIsuAcmslt.json        채무증권 발행실적 (발행일·권면총액·이자율·신용등급·만기일·상환여부)
+- fnlttSinglAcntAll.json         단일회사 전체 재무제표 (다중회사 주요계정 fnlttMultiAcnt 에는 매출채권이 없음)
+
+※ 미상환 잔액 금액은 보고서 표의 숫자를 그대로 주며 단위를 알려 주지 않습니다(회사마다 원·백만원 등).
+   그래서 금액은 amount_raw 로만 저장하고, 단위가 필요 없는 만기 비중(1년 이하 비중 등)을 뷰에서 계산합니다.
+"""
+from __future__ import annotations
+
+from ..config import env
+from ..http_util import RateLimiter, get_json
+from ..util import parse_ymd, to_decimal
+from .dart import BASE, STATUS
+
+_limiter = RateLimiter(0.15)
+
+# kind → (엔드포인트, [(응답 필드, 만기 구간 이름)])
+BALANCE_APIS = {
+    "bond": ("cprndNrdmpBlce", [
+        ("yy1_below", "1y"), ("yy1_excess_yy2_below", "1-2y"), ("yy2_excess_yy3_below", "2-3y"),
+        ("yy3_excess_yy4_below", "3-4y"), ("yy4_excess_yy5_below", "4-5y"), ("yy5_excess_yy10_below", "5-10y"),
+        ("yy10_excess", "10y+"), ("sm", "total")]),
+    "cp": ("entrprsBilScritsNrdmpBlce", [
+        ("de10_below", "10d"), ("de10_excess_de30_below", "10-30d"), ("de30_excess_de90_below", "30-90d"),
+        ("de90_excess_de180_below", "90-180d"), ("de180_excess_yy1_below", "180d-1y"),
+        ("yy1_excess_yy2_below", "1-2y"), ("yy2_excess_yy3_below", "2-3y"), ("yy3_excess", "3y+"), ("sm", "total")]),
+    "stb": ("srtpdPsndbtNrdmpBlce", [
+        ("de10_below", "10d"), ("de10_excess_de30_below", "10-30d"), ("de30_excess_de90_below", "30-90d"),
+        ("de90_excess_de180_below", "90-180d"), ("de180_excess_yy1_below", "180d-1y"), ("sm", "total"),
+        ("isu_lmt", "limit"), ("remndr_lmt", "limit_left")]),
+}
+ISSUE_API = "detScritsIsuAcmslt"
+# 1년 안에 만기가 오는 구간 (뷰 core.v_debt_maturity 와 같게 유지)
+WITHIN_1Y = {"1y", "10d", "10-30d", "30-90d", "90-180d", "180d-1y"}
+
+# 매출채권 계정: 순수 매출채권을 먼저, 없으면 '매출채권 및 기타채권' (어느 것을 썼는지 account_nm 으로 남김)
+RECEIVABLE_NAMES = (
+    ("매출채권", "단기매출채권", "매출채권(순액)", "유동매출채권"),
+    ("매출채권및기타채권", "매출채권및기타유동채권", "단기매출채권및기타채권", "매출채권및기타수취채권"),
+)
+
+
+def _check(payload: dict) -> bool:
+    """정상이면 True, 자료 없음(013)이면 False, 그 밖의 상태는 오류."""
+    status = payload.get("status")
+    if status == "013":
+        return False
+    if status != "000":
+        raise RuntimeError(f"[dart] {status} {STATUS.get(status, payload.get('message', ''))}")
+    return True
+
+
+def _date(text) -> object:
+    try:
+        return parse_ymd(str(text).strip()) if text and str(text).strip() not in ("-", "") else None
+    except ValueError:
+        return None
+
+
+def parse_balance(payload: dict, kind: str) -> list[dict]:
+    """미상환 잔액 응답 → [{label, bucket, amount_raw, stlm_dt, rcept_no}] (행 이름은 원문 그대로, 예: '공모|합계')."""
+    if not _check(payload):
+        return []
+    fields = BALANCE_APIS[kind][1]
+    out = []
+    for it in payload.get("list", []):
+        label = "|".join(x for x in ((it.get("remndr_exprtn1") or "").strip(),
+                                     (it.get("remndr_exprtn2") or "").strip()) if x)
+        for field, bucket in fields:
+            amount = to_decimal(it.get(field))
+            if amount is None:
+                continue
+            out.append({"label": label, "bucket": bucket, "amount_raw": amount,
+                        "stlm_dt": _date(it.get("stlm_dt")), "rcept_no": it.get("rcept_no")})
+    return out
+
+
+def parse_issues(payload: dict) -> list[dict]:
+    """채무증권 발행실적 → 발행 건별 행 (이자율 '3.25' → 3.25, 비어 있으면 None)."""
+    if not _check(payload):
+        return []
+    out = []
+    for i, it in enumerate(payload.get("list", [])):
+        out.append({
+            "seq": i,
+            "issuer": (it.get("isu_cmpny") or "").strip(),
+            "kind_nm": (it.get("scrits_knd_nm") or "").strip(),
+            "method": (it.get("isu_mth_nm") or "").strip(),
+            "issue_date": _date(it.get("isu_de")),
+            "face_amount_raw": to_decimal(it.get("facvalu_totamt")),
+            "rate": to_decimal((it.get("intrt") or "").replace("%", "")),
+            "rating": (it.get("evl_grad_instt") or "").strip() or None,
+            "maturity_date": _date(it.get("mtd")),
+            "repaid": (it.get("repy_at") or "").strip() or None,
+            "underwriter": (it.get("mngt_cmpny") or "").strip() or None,
+            "stlm_dt": _date(it.get("stlm_dt")),
+            "rcept_no": it.get("rcept_no"),
+        })
+    return out
+
+
+def pick_receivable(rows: list[dict]) -> dict | None:
+    """전체 재무제표(재무상태표) 행에서 매출채권 하나. 연결(CFS) 응답만 넘깁니다."""
+    bs = [r for r in rows if r.get("sj_div") == "BS" and r.get("amount") is not None]
+    for names in RECEIVABLE_NAMES:
+        for r in bs:
+            if (r.get("account_nm") or "").replace(" ", "") in names:
+                return r
+    return None
+
+
+def _params(corp_code: str, year: int, reprt_code: str) -> dict:
+    return {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
+            "bsns_year": str(year), "reprt_code": reprt_code}
+
+
+def fetch_balance(session, kind: str, corp_code: str, year: int, reprt_code: str) -> list[dict]:
+    api = BALANCE_APIS[kind][0]
+    payload = get_json(session, "dart", f"{BASE}/{api}.json", params=_params(corp_code, year, reprt_code),
+                       limiter=_limiter)
+    return parse_balance(payload, kind)
+
+
+def fetch_issues(session, corp_code: str, year: int, reprt_code: str) -> list[dict]:
+    payload = get_json(session, "dart", f"{BASE}/{ISSUE_API}.json", params=_params(corp_code, year, reprt_code),
+                       limiter=_limiter)
+    return parse_issues(payload)

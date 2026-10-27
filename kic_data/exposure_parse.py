@@ -5,6 +5,8 @@
 - fx_asset / fx_liab : 외화 화폐성 자산·부채 (통화별, 원화 환산, 원)
 - export_share : 수출 매출 비중 (%), 사업의 내용 '매출 실적'의 내수·수출 표에서 계산
 - fx_derivative: 통화선도·통화스왑 등 외환 파생상품 사용 여부 (1/0) + 근거 문장
+- ir_sens      : 이자율 n%p(또는 n bp) 상승 시 손익 영향 (원) — 이자율위험 주석의 민감도 표 (변동금리 차입 노출)
+- price_text   : 사업의 내용 '가격변동추이·가격변동원인' 문단 발췌 (판가 전가력 판단 근거, 숫자로 바꾸지 않음)
 
 원칙: 표에서 읽은 숫자와, 그 숫자로 한 단순 계산(비중)만 저장합니다. 못 찾으면 저장하지 않습니다(추정 없음).
 모든 행에 근거(표 앞 문맥, 파일, 표 번호)를 함께 남깁니다.
@@ -302,6 +304,77 @@ def fx_derivative(tables: list[Table]) -> Metric | None:
     return None
 
 
+# ---------------------------------------------------------------- 이자율 민감도
+
+BP_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(bp|BP|bps|베이시스\s*포인트|%\s*p|%p|%포인트|%)")
+IR_ROW_RE = re.compile(r"법인세\s*(비용)?\s*차감\s*전|세전|당기\s*(순)?\s*(이익|손익)|이자\s*(비용|손익|수익)|순이익|손익")
+
+
+def _ir_change(text: str) -> float | None:
+    """'100bp' → 1.0, '1%p' → 1.0, '0.5%' → 0.5 (%p 단위)."""
+    m = BP_RE.search(text)
+    if not m:
+        return None
+    v = float(m.group(1))
+    return v / 100 if m.group(2).lower().startswith(("bp", "베이")) else v
+
+
+def _is_ir_sensitivity(t: Table) -> bool:
+    b = _blob(t, 6)
+    return ("이자율" in b or "금리" in b) and "환율" not in b \
+        and bool(re.search(r"변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|민감도|인상\s*시|인하\s*시", b)) \
+        and _ir_change(b) is not None
+
+
+def ir_sensitivity(t: Table) -> list[Metric]:
+    """이자율 상승 시 손익 영향 한 값. 상승 열이 있으면 그 열, 없으면 '상승' 행의 첫 숫자."""
+    f = unit_factor(t.unit)
+    if f is None:
+        return []
+    b = _blob(t, 6)
+    up = _up_col(t)
+    v = None
+    for r in t.rows:
+        label = r[0].replace(" ", "") if r else ""
+        if PRIOR_RE.search(label) or "하락" in label or "인하" in label:
+            continue
+        if up is not None and up < len(r) and IR_ROW_RE.search(label + " " + b[:200]):
+            v = num(r[up])
+        elif up is None and ("상승" in label or "인상" in label):
+            vals = [x for x in (num(c) for c in r[1:]) if x is not None]
+            v = vals[0] if vals else None
+        if v is not None:
+            break
+    if v is None:
+        return []
+    return [Metric("ir_sens", "ALL", v * f, _ir_change(b), _basis(b), t.unit, _evidence(t), t.index, t.file)]
+
+
+# ---------------------------------------------------------------- 가격변동 문단 (판가 전가력 근거)
+
+PRICE_HEAD_RE = re.compile(r"(주요\s*)?(제품|원재료|원\s*재료)\s*(등의)?\s*가격\s*변동\s*(추이|원인)|가격\s*변동\s*원인")
+
+
+def price_text(files: dict[str, str], limit: int = 3, width: int = 600) -> list[str]:
+    """본문에서 '주요 제품 등의 가격변동추이', '주요 원재료 등의 가격변동추이', '가격변동원인' 뒤 문단을 발췌.
+    표 숫자는 빼고 문장만 남깁니다(판단은 에이전트가 '판단 보류'로 다루고, 이건 근거로만 씀)."""
+    from .collectors.dart_doc import TABLE_RE, clean
+
+    main = next(iter(files.values()), "")
+    text = clean(TABLE_RE.sub(" ", main))
+    out: list[str] = []
+    for m in PRICE_HEAD_RE.finditer(text):
+        piece = text[m.start():m.start() + width].strip()
+        if len(re.sub(r"[^가-힣]", "", piece)) < 40:   # 제목만 있고 문장이 없는 경우
+            continue
+        if any(piece[:60] in o for o in out):
+            continue
+        out.append(piece)
+        if len(out) >= limit:
+            break
+    return out
+
+
 # ---------------------------------------------------------------- 묶음
 
 def _section_rank(t: Table) -> int:
@@ -314,7 +387,7 @@ def _section_rank(t: Table) -> int:
 
 
 def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
-    """원문 파일들 → {'metrics': [Metric], 'risk_text': 환위험 관리 서술(RAG용), 'found': {...}}.
+    """원문 파일들 → {'metrics': [Metric], 'risk_text': 환위험 관리 서술(RAG용), 'price_text': [발췌], 'found': [...]}.
     본문(접수번호.xml) → 첨부(감사보고서) 순으로 보고, 지표마다 처음 찾은 표를 씁니다.
     환율 민감도는 같은 파일 안에 표가 여럿이면 문서 목차(TITLE)로 고릅니다:
     '연결재무제표 주석' → '재무제표 주석' → 그 밖(사업의 내용, 계열회사 현황 등) 순. 같은 순위 안에서는 처음 나온 표.
@@ -335,6 +408,12 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
                 metrics += ms
                 got.add("fx_sens")
                 risk_text = risk_text or t.context
+        if "ir_sens" not in got:
+            cands = [(ms, t) for t in tables if _is_ir_sensitivity(t) for ms in [ir_sensitivity(t)] if ms]
+            if cands:
+                ms, _t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
+                metrics += ms
+                got.add("ir_sens")
         for t in tables:
             if "fx_pos" not in got and _is_fx_position(t):
                 ms = fx_position(t)
@@ -351,4 +430,7 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
         metrics.append(d)
         got.add("fx_derivative")
         risk_text = (risk_text + " " + d.evidence).strip()
-    return {"metrics": metrics, "risk_text": risk_text[-900:], "found": sorted(got)}
+    prices = price_text(files)
+    if prices:
+        got.add("price_text")
+    return {"metrics": metrics, "risk_text": risk_text[-900:], "price_text": prices, "found": sorted(got)}

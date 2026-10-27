@@ -117,7 +117,7 @@ def test_fx_derivative_and_risk_text():
 
 def test_nothing_found_returns_empty():
     res = ep.extract({"a.xml": _t([["구분", "금액"], ["토지", "1,000"]])})
-    assert res == {"metrics": [], "risk_text": "", "found": []}
+    assert res == {"metrics": [], "risk_text": "", "price_text": [], "found": []}
 
 
 def test_sensitivity_prefers_consolidated_notes_section():   # 지주사: 앞쪽 관계회사 표보다 연결재무제표 주석의 표
@@ -130,3 +130,29 @@ def test_sensitivity_prefers_consolidated_notes_section():   # 지주사: 앞쪽
     (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
     assert s.value == 400e6
     assert dart_doc.tables_from_xml(x)[0].extra["section"] == "II. 사업의 내용"
+
+
+def test_ir_sensitivity_bp_and_up_column():
+    x = _t([["구 분", "100bp 상승시", "100bp 하락시"], ["법인세비용차감전순이익", "(12,345)", "12,345"]],
+           before="변동금리부 차입금에 대하여 이자율이 100bp 변동시 법인세비용차감전순이익에 미치는 영향",
+           unit_table="(단위: 백만원)")
+    res = ep.extract({"a.xml": x})
+    (s,) = [k for k in res["metrics"] if k.metric == "ir_sens"]
+    assert s.value == -12_345e6 and s.change_pct == 1 and s.basis == "세전이익" and "ir_sens" in res["found"]
+    assert not [k for k in res["metrics"] if k.metric == "fx_sens"]
+
+
+def test_ir_sensitivity_rows_are_up_down():
+    x = _t([["구분", "당기", "전기"], ["1%p 상승시 이자비용 증가", "3,000", "2,500"], ["1%p 하락시 이자비용 감소", "(3,000)", "(2,500)"]],
+           before="이자율위험: 이자율 변동시 이자비용에 미치는 영향", unit_table="(단위: 천원)")
+    (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "ir_sens"]
+    assert s.value == 3_000e3 and s.change_pct == 1
+
+
+def test_price_text_excerpt_without_numbers_from_tables():
+    body = ("<TITLE>II. 사업의 내용</TITLE><P>나. 주요 제품 등의 가격변동추이</P>"
+            "<TABLE><TR><TD>DRAM</TD><TD>3.5</TD></TR></TABLE>"
+            "<P>메모리 가격은 수요 회복과 공급사의 감산으로 상승하였으며, 고객사와의 분기별 가격 협상을 통해 원가 변동을 "
+            "판매가격에 반영하고 있습니다.</P><P>다. 주요 원재료</P>")
+    res = ep.extract({"a.xml": body})
+    assert "price_text" in res["found"] and "가격 협상" in res["price_text"][0] and "3.5" not in res["price_text"][0]

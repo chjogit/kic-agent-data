@@ -2,6 +2,7 @@
 -- A1 거시 에이전트가 '업종 기본값' 대신 회사 실제 값으로 노출 등급을 정할 때 씁니다.
 -- metric: fx_sens(환율 change_pct% 상승 시 basis 영향, 원) · fx_asset / fx_liab(외화 화폐성 자산·부채, 원화 환산 원)
 --         export_share(수출 매출 비중 %) · fx_derivative(외환 파생상품 사용 1/0)
+--         ir_sens(이자율 change_pct%p 상승 시 basis 영향, 원)
 
 CREATE TABLE IF NOT EXISTS core.report_exposure (
     company_id   bigint NOT NULL REFERENCES core.company (company_id),
@@ -10,7 +11,7 @@ CREATE TABLE IF NOT EXISTS core.report_exposure (
     metric       text NOT NULL,
     currency     text NOT NULL DEFAULT 'ALL',
     value        numeric,
-    change_pct   numeric,          -- fx_sens: 몇 % 변동 기준인지 (원문 그대로)
+    change_pct   numeric,          -- fx_sens: 몇 % 변동 / ir_sens: 몇 %p 변동 기준인지 (100bp = 1)
     basis        text,             -- fx_sens: 세전이익 / 당기손익 / 자본
     unit_raw     text,             -- 원문 표의 단위 표기
     evidence     text,             -- 표 앞 문맥 (근거)
