@@ -887,6 +887,9 @@ def cmd_investor_flows(args) -> int:
     return 1 if bad else 0
 
 
+LENDING_EMPTY_ALERT_DAYS = 5  # 며칠 지난 날짜가 이만큼 한꺼번에 0건이면 승인·엔드포인트 문제로 봄
+
+
 def cmd_lending(args) -> int:
     """코스피 종목별 일별 대차거래 (하루 1회 호출로 코스피 전 종목). 등록된 국내 종목만 저장합니다.
 
@@ -922,10 +925,15 @@ def cmd_lending(args) -> int:
                 by_cid.setdefault(ids[r["ticker"]], []).append(r)
     with db.connect() as conn:
         n = sum(db.upsert_lending(conn, cid, rows, "fsc_lending") for cid, rows in by_cid.items())
-    # 최근 1~2 영업일은 아직 공개 전일 수 있음. 며칠 지난 날짜도 0건이면 승인·엔드포인트 문제로 보고 실패로 남김
-    if n == 0 and not bad and min(todo) <= today - timedelta(days=4):
-        _fail("대차거래", "0건: 활용신청 승인·엔드포인트를 확인하세요")
+    # 활용자가이드: 영업일 자료는 다음 영업일 13시 이후 공개(금요일분은 월요일). 그래서 최근 1~2 영업일은 아직 비어 있을 수 있고, 원천에 자료가 없는 날(빈 날)도 있습니다. 승인·키 문제는 오류 코드로
+    # 와서 위에서 실패로 잡히므로, 0건은 며칠 지난 날짜 여러 개가 한꺼번에 비었을 때만 실패로 남깁니다.
+    old_empty = [d for d in todo if d <= today - timedelta(days=4)]
+    if n == 0 and not bad and len(old_empty) >= LENDING_EMPTY_ALERT_DAYS:
+        _fail("대차거래", f"0건 ({min(todo)}~{max(todo)} {len(todo)}일): 활용신청 승인·엔드포인트를 확인하세요")
         return 1
+    if n == 0:
+        _ok("대차거래", f"새 행 없음: 원천에 아직 없거나 빈 날 {', '.join(str(d) for d in sorted(todo))}")
+        return 0
     _ok("대차거래", f"{len(todo)}일 요청 중 {days}거래일 수신 ({min(todo)}~{max(todo)}), {len(by_cid)}/{len(ids)}종목, {n}행")
     return 1 if bad else 0
 
