@@ -459,6 +459,12 @@ def upsert_quarters(conn, company_id: int, rows: list[dict], source: str) -> int
     return len(params)
 
 
+def has_macro(conn, series_id: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM core.macro_obs WHERE series_id = %s LIMIT 1", [series_id])
+        return cur.fetchone() is not None
+
+
 def upsert_macro(conn, series_id: str, name: str, source: str, frequency: str, rows: list[tuple]) -> int:
     """rows: [(date, Decimal|None), ...]"""
     with conn.cursor() as cur:
