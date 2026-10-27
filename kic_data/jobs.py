@@ -113,9 +113,9 @@ JOBS: list[Job] = [
     Job("backfill-investor-flows", "투자자별 순매수 1년", "cmd_investor_flows", {"days": 365}, every=ONCE,
         needs=DB, split=("KR",), chunk=20, group="과거분(1회)"),
     Job("backfill-dart-annual", "국내 연간 재무 5년(다중회사)", "cmd_dart_multi",
-        {"from_year": _years_ago(5), "reports": "11011"}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
+        {"from_year": _years_ago(5), "reports": "11011", "max_seconds": 300}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
     Job("backfill-dart-quarterly", "국내 분기 재무 2년(다중회사)", "cmd_dart_multi",
-        {"from_year": _years_ago(2), "reports": Q_REPORTS}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
+        {"from_year": _years_ago(2), "reports": Q_REPORTS, "max_seconds": 300}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
     # 매시간: 전 종목/시장 전체 조회라 종목 수와 거의 무관
     Job("kr-prices", "국내 시세(전 종목 조회)", "cmd_kr_prices", {"days": 10}, needs=DB + ("FSC_API_KEY",)),
     Job("us-prices", "해외 시세", "cmd_us_prices", {"days": 10}, needs=DB, split=("US",), chunk=10),
@@ -420,7 +420,9 @@ def run_job(job: Job, state, *, conn=None, trigger: str = "tick", commands=None,
         fn = getattr(commands, job.command)
         with redirect_stdout(buf), redirect_stderr(buf):
             rc = fn(job.namespace())
-        if rc not in (0, None):
+        if rc == MORE:
+            next_cursor, complete = cursor, False  # 남은 일은 다음 실행에서
+        elif rc not in (0, None):
             status = "warn"  # 일부 종목·시리즈만 실패: 로그 확인. 반복 실행으로 막히지 않게 진행은 계속
     except Exception as exc:  # noqa: BLE001  작업 하나가 실패해도 다음 작업은 실행
         status = "failed"
@@ -453,6 +455,7 @@ def _summary(log: str, status: str, tickers: str | None, complete: bool) -> str:
     return " · ".join(parts)
 
 
+MORE = 3  # 명령이 이 값을 돌려주면 '아직 남음': 다음 실행에서 이어서 (예: cmd_dart_multi 시간 예산)
 BACKFILL_SHARE = 0.5  # 과거분이 예산을 다 쓰면 매시간 시세·공시가 밀리므로 절반까지만
 
 

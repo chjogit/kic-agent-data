@@ -433,6 +433,14 @@ def upsert_facts(conn, company_id: int, rows: list[dict], source: str) -> int:
     return len(params)
 
 
+def fact_companies(conn, fiscal_year: int, report_code: str, source: str) -> set[int]:
+    """이 연도·보고서의 재무 행이 이미 있는 회사 id."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT company_id FROM core.financial_fact "
+                    "WHERE fiscal_year = %s AND report_code = %s AND source = %s", [fiscal_year, report_code, source])
+        return {r[0] for r in cur.fetchall()}
+
+
 def fetch_facts(conn, company_id: int, source: str) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
