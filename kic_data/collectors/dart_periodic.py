@@ -15,9 +15,12 @@
 """
 from __future__ import annotations
 
+import re
+from datetime import date
+
 from ..config import env
 from ..http_util import RateLimiter, get_json
-from ..util import parse_ymd, to_decimal
+from ..util import to_decimal
 from .dart import BASE, STATUS
 
 _limiter = RateLimiter(0.15)
@@ -58,11 +61,28 @@ def _check(payload: dict) -> bool:
     return True
 
 
-def _date(text) -> object:
+DATE_RE = re.compile(r"(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})")
+
+
+def _date(text) -> date | None:
+    """'20260310', '2026-03-10', '2026.03.10', '2026년 3월 10일' → date. 그 밖(빈칸, '-')은 None."""
+    t = str(text or "").strip()
+    m = DATE_RE.search(t)
+    if m:
+        y, mo, d = (int(x) for x in m.groups())
+    elif re.fullmatch(r"\d{8}", t):
+        y, mo, d = int(t[:4]), int(t[4:6]), int(t[6:])
+    else:
+        return None
     try:
-        return parse_ymd(str(text).strip()) if text and str(text).strip() not in ("-", "") else None
+        return date(y, mo, d)
     except ValueError:
         return None
+
+
+def _text(value) -> str | None:
+    t = re.sub(r"\s+", " ", str(value or "")).strip()
+    return None if t in ("", "-") else t
 
 
 def parse_balance(payload: dict, kind: str) -> list[dict]:
@@ -88,21 +108,25 @@ def parse_issues(payload: dict) -> list[dict]:
     if not _check(payload):
         return []
     out = []
-    for i, it in enumerate(payload.get("list", [])):
+    for it in payload.get("list", []):
+        issuer = _text(it.get("isu_cmpny")) or ""
+        if re.sub(r"\s", "", issuer) in ("합계", "총계", "계"):   # 원문 표의 합계 행
+            continue
         out.append({
-            "seq": i,
-            "issuer": (it.get("isu_cmpny") or "").strip(),
-            "kind_nm": (it.get("scrits_knd_nm") or "").strip(),
-            "method": (it.get("isu_mth_nm") or "").strip(),
+            "seq": len(out),
+            "issuer": issuer,
+            "kind_nm": _text(it.get("scrits_knd_nm")),
+            "method": _text(it.get("isu_mth_nm")),
             "issue_date": _date(it.get("isu_de")),
             "face_amount_raw": to_decimal(it.get("facvalu_totamt")),
             "rate": to_decimal((it.get("intrt") or "").replace("%", "")),
-            "rating": (it.get("evl_grad_instt") or "").strip() or None,
+            "rating": _text(it.get("evl_grad_instt")),
             "maturity_date": _date(it.get("mtd")),
-            "repaid": (it.get("repy_at") or "").strip() or None,
-            "underwriter": (it.get("mngt_cmpny") or "").strip() or None,
+            "repaid": _text(it.get("repy_at")),
+            "underwriter": _text(it.get("mngt_cmpny")),
             "stlm_dt": _date(it.get("stlm_dt")),
             "rcept_no": it.get("rcept_no"),
+            "_raw_dates": (it.get("isu_de"), it.get("mtd")),
         })
     return out
 

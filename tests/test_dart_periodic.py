@@ -42,13 +42,15 @@ def test_parse_issues_rate_and_dates():
         {"isu_cmpny": "샘플", "scrits_knd_nm": "회사채", "isu_mth_nm": "공모", "isu_de": "20260310",
          "facvalu_totamt": "200,000", "intrt": "3.25", "evl_grad_instt": "AA+(한신평)", "mtd": "20290310",
          "repy_at": "미상환", "mngt_cmpny": "-", "stlm_dt": "2026-06-30", "rcept_no": "1"},
-        {"isu_cmpny": "샘플", "scrits_knd_nm": "기업어음", "isu_mth_nm": "사모", "isu_de": "-", "facvalu_totamt": "-",
+        {"isu_cmpny": "샘플", "scrits_knd_nm": "기업어음", "isu_mth_nm": "사모", "isu_de": "2026.01.05", "facvalu_totamt": "-",
          "intrt": "-", "evl_grad_instt": "-", "mtd": "-", "repy_at": "-", "mngt_cmpny": "-", "stlm_dt": "-",
-         "rcept_no": "1"}]}
+         "rcept_no": "1"},
+        {"isu_cmpny": "합 계", "scrits_knd_nm": "-", "facvalu_totamt": "1,200", "intrt": "-", "rcept_no": "1"}]}
     a, b = dp.parse_issues(payload)
     assert a["rate"] == Decimal("3.25") and a["issue_date"] == date(2026, 3, 10) and a["maturity_date"] == date(2029, 3, 10)
     assert a["face_amount_raw"] == Decimal(200000) and a["rating"] == "AA+(한신평)"
-    assert b["rate"] is None and b["issue_date"] is None and b["face_amount_raw"] is None
+    assert b["rate"] is None and b["issue_date"] == date(2026, 1, 5) and b["face_amount_raw"] is None
+    assert b["rating"] is None and b["seq"] == 1   # '-' 는 값 없음, 합계 행은 뺌
 
 
 def test_pick_receivable_prefers_pure_trade_receivables():

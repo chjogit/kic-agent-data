@@ -635,6 +635,12 @@ def _probe_extract(args) -> int:
             ms = {(m.metric, m.currency): m for m in res["metrics"]}
             usd = ms.get(("fx_sens", "USD"))
             exp = ms.get(("export_share", "ALL"))
+            ir = ms.get(("ir_sens", "ALL"))
+            if ir:
+                print(f"   ↳ 이자율 민감도 {ir.value/1e8:,.0f}억 ({ir.change_pct}%p {ir.basis}) 표#{ir.table_index} "
+                      f"문맥={ir.evidence[-120:]!r}")
+            for txt in res.get("price_text", [])[:2]:
+                print(f"   ↳ 가격변동 발췌: {txt[:200]!r}")
             print(f"{ticker} {name} FY{fy}: {res['found']} | USD민감도="
                   f"{'-' if not usd else f'{usd.value/1e8:,.0f}억 ({usd.change_pct}% {usd.basis})'}"
                   f" | 수출비중={'-' if not exp else f'{exp.value:.1f}%'}")
