@@ -4,10 +4,7 @@
   "functions": {
     "main.py": {
       "maxDuration": 300,
-      "includeFiles": "sql/**"
+      "includeFiles": "{sql,web}/**"
     }
-  },
-  "crons": [
-    { "path": "/api/cron/tick", "schedule": "0 21 * * *" }
-  ]
+  }
 }

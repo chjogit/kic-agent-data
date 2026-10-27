@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KIC Data Quality Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1419; --card: #1a2332; --border: #2d3a4d;
+    --text: #e6edf3; --dim: #8b949e;
+    --ok: #22c55e; --warn: #eab308; --error: #ef4444; --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); }
+  header { background: #1e3a5f; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+  header h1 { font-size: 1.25rem; }
+  .nav button { background: transparent; border: 1px solid var(--border); color: var(--text); padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; margin-left: 0.25rem; }
+  .nav button.active, .nav button:hover { background: var(--accent); border-color: var(--accent); }
+  main { padding: 1.25rem; max-width: 1200px; margin: 0 auto; }
+  .section { display: none; }
+  .section.active { display: block; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; cursor: pointer; }
+  .card:hover { border-color: var(--accent); }
+  .light { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .light.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .light.warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  .light.error { background: var(--error); box-shadow: 0 0 6px var(--error); }
+  .light.unknown { background: #6b7280; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; }
+  th, td { padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+  th { background: #243044; }
+  .badge { padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; }
+  .badge.ok { background: rgba(34,197,94,.2); color: var(--ok); }
+  .badge.warn { background: rgba(234,179,8,.2); color: var(--warn); }
+  .badge.error { background: rgba(239,68,68,.2); color: var(--error); }
+  .info { background: var(--card); border-left: 3px solid var(--accent); padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem; color: var(--dim); }
+  #detail { margin-top: 1rem; }
+  .navlink { color: var(--text); margin-left: 0.75rem; font-size: 0.9rem; text-decoration: none; }
+  .table-wrap { overflow-x: auto; }
+  .back { color: var(--accent); cursor: pointer; font-size: 0.9rem; margin-bottom: 0.5rem; display: inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KIC Data Quality Dashboard</h1>
+  <nav class="nav">
+    <button data-sec="overview" class="active" onclick="show('overview')">개요</button>
+    <button data-sec="apis" onclick="show('apis')">API 상태</button>
+    <button data-sec="schemas" onclick="show('schemas')">스키마</button>
+    <button data-sec="anomalies" onclick="show('anomalies')">이상 이벤트</button>
+    <a class="navlink" href="/">수집 작업 →</a>
+  </nav>
+</header>
+<main>
+  <div class="info">
+    수집 작업(GitHub Actions 매시 7분)이 끝날 때마다 원천 API 상태와 실패·일부 실패를 기록합니다. 시각은 한국시간(KST).
+    마지막 갱신: <span id="updated">—</span>
+    <div id="sample-note" style="display:none;color:var(--warn);margin-top:4px;">API 에 연결하지 못해 샘플 데이터를 보여 주고 있습니다.</div>
+  </div>
+
+  <section id="overview" class="section active">
+    <div class="grid" id="overview-cards"></div>
+    <h3 style="margin-bottom:0.5rem; font-size:1rem;">최근 이상 (24h)</h3>
+    <div id="anomaly-summary"></div>
+  </section>
+
+  <section id="apis" class="section">
+    <div class="grid" id="api-cards"></div>
+    <div id="api-detail"></div>
+  </section>
+
+  <section id="schemas" class="section">
+    <div class="grid">
+      <div class="card" onclick="loadSchema('core')"><strong>core</strong><div style="color:var(--dim);font-size:0.85rem;margin-top:4px;">에이전트 읽기용</div></div>
+      <div class="card" onclick="loadSchema('ops')"><strong>ops</strong><div style="color:var(--dim);font-size:0.85rem;margin-top:4px;">작업 이력</div></div>
+      <div class="card" onclick="loadSchema('quality')"><strong>quality</strong><div style="color:var(--dim);font-size:0.85rem;margin-top:4px;">품질·이상</div></div>
+      <div class="card" onclick="loadSchema('rag')"><strong>rag</strong><div style="color:var(--dim);font-size:0.85rem;margin-top:4px;">뉴스·공시 청크</div></div>
+    </div>
+    <div id="schema-detail"></div>
+  </section>
+
+  <section id="anomalies" class="section">
+    <div class="table-wrap"><table>
+      <thead><tr><th>시간(KST)</th><th>소스</th><th>규칙</th><th>심각도</th><th>대상</th><th>메시지</th></tr></thead>
+      <tbody id="anomaly-table"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+const API_BASE = ''; // 같은 도메인(Vercel 의 main.py)이면 빈 문자열
+
+const SAMPLE = {
+  sample: true,
+  apis: [
+    {api:'dart', status:'ok', last_success: null, consecutive_failures:0, quota_hit:false},
+    {api:'yfinance', status:'warn', last_success: null, consecutive_failures:1, quota_hit:false, last_error_msg:'429'},
+    {api:'naver', status:'warn', last_success: null, consecutive_failures:0, quota_hit:true},
+  ],
+  anomalies_24h: {warn: 0, error: 0}
+};
+
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ts = v => v ? esc(String(v).slice(0,16).replace('T',' ')) : '—';
+
+async function fetchJSON(path) {
+  try {
+    const r = await fetch(API_BASE + path, {credentials: 'same-origin'});
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+function lightClass(s) {
+  return ['ok','warn','error'].includes(s) ? s : 'unknown';
+}
+const STATUS_KO = {ok:'정상', warn:'주의', error:'오류', unknown:'기록 없음'};
+function badge(s) {
+  return `<span class="badge ${lightClass(s)}">${esc(s)}</span>`;
+}
+
+async function getOverview() {
+  const d = await fetchJSON('/api/quality/overview');
+  document.getElementById('sample-note').style.display = d ? 'none' : 'block';
+  return d || SAMPLE;
+}
+
+async function loadOverview() {
+  const data = await getOverview();
+  document.getElementById('updated').textContent = data.generated_at ? ts(data.generated_at) : '—';
+  document.getElementById('overview-cards').innerHTML = (data.apis || []).map(a => `
+    <div class="card" onclick="showApi('${esc(a.api)}')">
+      <div><span class="light ${lightClass(a.status)}"></span><strong>${esc(a.api)}</strong>
+        <span style="font-size:0.8rem;color:var(--dim);margin-left:4px;">${STATUS_KO[a.status] || esc(a.status)}</span></div>
+      <div style="margin-top:6px;font-size:0.85rem;color:var(--dim);">
+        ${a.last_success ? '최근 성공: ' + ts(a.last_success) : '성공 기록 없음'}
+        ${a.quota_hit ? '<br>한도 초과 의심' : ''}
+        ${a.consecutive_failures > 0 ? `<br>연속 실패 ${esc(a.consecutive_failures)}` : ''}
+      </div>
+    </div>
+  `).join('');
+  const ac = data.anomalies_24h || {};
+  document.getElementById('anomaly-summary').innerHTML = `
+    <div style="display:flex;gap:1rem;">
+      <div>warn: <strong>${esc(ac.warn || 0)}</strong></div>
+      <div>error: <strong>${esc(ac.error || 0)}</strong></div>
+      <a href="#" style="color:var(--accent);" onclick="show('anomalies');return false;">목록 보기</a>
+    </div>
+  `;
+}
+
+async function loadApis() {
+  const data = await getOverview();
+  document.getElementById('api-cards').innerHTML = (data.apis || []).map(a => `
+    <div class="card" onclick="showApiDetail('${esc(a.api)}')">
+      <span class="light ${lightClass(a.status)}"></span><strong>${esc(a.api)}</strong>
+      <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">${STATUS_KO[a.status] || esc(a.status)}</div>
+    </div>
+  `).join('');
+  document.getElementById('api-detail').innerHTML = '';
+}
+
+function showApi(name) {
+  show('apis').then(() => showApiDetail(name));
+}
+
+async function showApiDetail(name) {
+  const d = await fetchJSON('/api/quality/api/' + encodeURIComponent(name));
+  const el = document.getElementById('api-detail');
+  if (!d) {
+    el.innerHTML = `<div class="card"><div class="back" onclick="loadApis()">← 목록</div><p>${esc(name)} 상세를 불러올 수 없습니다.</p></div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="card">
+      <div class="back" onclick="loadApis()">← 목록</div>
+      <h3><span class="light ${lightClass(d.status)}"></span>${esc(d.api)} <span style="font-size:0.85rem;color:var(--dim);">${STATUS_KO[d.status] || ''}</span></h3>
+      <p style="margin:0.5rem 0;font-size:0.9rem;">최근 성공: ${ts(d.last_success)}</p>
+      <p style="font-size:0.9rem;">최근 오류: ${ts(d.last_error)} ${esc(d.last_error_msg || '')}</p>
+      <p style="font-size:0.9rem;">연속 실패: ${esc(d.consecutive_failures)} · 한도 초과 의심: ${d.quota_hit ? '예' : '아니오'}
+        · 최근 소요: ${d.last_run_duration_ms != null ? (d.last_run_duration_ms/1000).toFixed(1) + '초' : '—'}</p>
+      <p style="font-size:0.85rem;color:var(--dim);">관련 작업: ${(d.jobs||[]).map(esc).join(', ') || '—'}</p>
+      <h4 style="margin-top:1rem;">최근 체크</h4>
+      <ul style="font-size:0.85rem;color:var(--dim);margin-left:1rem;">
+        ${(d.recent_checks||[]).map(c => `<li>${ts(c.time)} [${esc(c.severity)}] ${esc(c.rule)} ${esc(c.target||'')}: ${esc(c.message||'')}</li>`).join('') || '<li>없음</li>'}
+      </ul>
+    </div>
+  `;
+}
+
+async function loadSchema(name) {
+  const d = await fetchJSON('/api/quality/schema/' + encodeURIComponent(name));
+  const el = document.getElementById('schema-detail');
+  if (!d) {
+    el.innerHTML = `<p style="color:var(--dim);">스키마 정보를 불러올 수 없습니다. (/api/quality/schema/${esc(name)})</p>`;
+    return;
+  }
+  el.innerHTML = `
+    <h3 style="margin:1rem 0 0.5rem;">${esc(d.schema)} <span style="font-size:0.8rem;color:var(--dim);">건수는 ${esc(d.count_note || '')}</span></h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>테이블</th><th>종류</th><th>건수</th></tr></thead>
+      <tbody>${(d.tables||[]).map(t => `<tr><td>${esc(t.table)}</td><td>${esc(t.kind||'')}</td><td>${t.count != null ? Number(t.count).toLocaleString('ko-KR') : '—'}</td></tr>`).join('') || '<tr><td colspan="3">테이블 없음</td></tr>'}</tbody>
+    </table></div>
+  `;
+}
+
+async function loadAnomalies() {
+  const d = await fetchJSON('/api/quality/anomalies?limit=50');
+  const rows = (d && d.anomalies) || [];
+  document.getElementById('anomaly-table').innerHTML = rows.length
+    ? rows.map(a => `<tr>
+        <td>${ts(a.time)}</td>
+        <td>${esc(a.source)}</td>
+        <td>${esc(a.rule)}</td>
+        <td>${badge(a.severity)}</td>
+        <td>${esc(a.target||'')}</td>
+        <td>${esc(a.message||'')}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="6" style="color:var(--dim);">${d ? '이상 이벤트 없음' : 'API 미연결'}</td></tr>`;
+}
+
+function show(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.sec === id));
+  document.getElementById(id).classList.add('active');
+  if (id === 'overview') return loadOverview();
+  if (id === 'apis') return loadApis();
+  if (id === 'anomalies') return loadAnomalies();
+  return Promise.resolve();
+}
+
+loadOverview();
+</script>
+</body>
+</html>

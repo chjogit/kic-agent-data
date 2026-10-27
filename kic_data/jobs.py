@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
-from . import db
+from . import db, quality
 
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
@@ -232,6 +232,14 @@ class DbState:
                     [job, trigger, tickers, started, finished, status, round(seconds, 1), log[-LOG_LIMIT:]])
             conn.commit()
         self._run(q)
+        try:  # 품질 기록(sql/017)은 실패해도 수집 기록·다음 작업에 영향을 주지 않게
+            self._run(lambda conn: quality.record_job(conn, job, status=status, seconds=seconds, detail=detail,
+                                                      log=log, finished=finished))
+        except Exception:  # noqa: BLE001
+            try:
+                self.conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
 
     def reset(self, job: str) -> None:
         def q(conn):
