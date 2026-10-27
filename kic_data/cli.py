@@ -596,10 +596,65 @@ PROBE_KEYS = {
 }
 
 
+def _probe_extract(args) -> int:
+    """전 종목(또는 --tickers)에 추출기를 돌려 결과와 실패 사례 표를 출력 (DB에 쓰지 않음)."""
+    from . import exposure_parse
+    from .collectors import dart_doc
+
+    s = make_session()
+    stats: dict[str, int] = {}
+    n = 0
+    with db.connect() as conn:
+        companies = db.list_companies(conn, "KR")
+        if args.tickers != "ALL":
+            want = {t.strip() for t in args.tickers.split(",")}
+            companies = [c for c in companies if c[1] in want]
+        for cid, ticker, name, *_ in companies[: args.limit]:
+            reports = db.annual_reports(conn, cid)
+            if not reports:
+                print(f"{ticker} {name}: 사업보고서 없음")
+                continue
+            fy = reports[0][1]
+            files = None
+            for rc, y, _ in reports:
+                if y != fy:
+                    break
+                try:
+                    files = dart_doc.fetch_document(s, rc)
+                    break
+                except RuntimeError as exc:
+                    print(f"{ticker} {name}: {rc} {exc}")
+            if not files:
+                continue
+            n += 1
+            res = exposure_parse.extract(files, db.annual_revenue(conn, cid, fy))
+            for k in res["found"]:
+                stats[k] = stats.get(k, 0) + 1
+            ms = {(m.metric, m.currency): m for m in res["metrics"]}
+            usd = ms.get(("fx_sens", "USD"))
+            exp = ms.get(("export_share", "ALL"))
+            print(f"{ticker} {name} FY{fy}: {res['found']} | USD민감도="
+                  f"{'-' if not usd else f'{usd.value/1e8:,.0f}억 ({usd.change_pct}% {usd.basis})'}"
+                  f" | 수출비중={'-' if not exp else f'{exp.value:.1f}%'}")
+            if "fx_sens" not in res["found"] and args.show_misses:
+                shown = 0
+                for fname, text in files.items():
+                    for tb in dart_doc.tables_from_xml(text, fname):
+                        blob = tb.context + " " + tb.text(4)
+                        if "환율" in blob and "%" in blob and shown < 2:
+                            shown += 1
+                            print(f"   · 후보 {fname} 표#{tb.index} 단위={tb.unit} 문맥={tb.context[-160:]!r}")
+                            print("     " + tb.text(6)[:500].replace(chr(10), chr(10) + "     "))
+    print(f"\n== 요약: 원문 {n}개사, " + ", ".join(f"{k} {v}개사" for k, v in sorted(stats.items())))
+    return 0
+
+
 def cmd_probe_dart_doc(args) -> int:
     """사업보고서 원문에서 노출 관련 표가 어떤 모양인지 출력합니다 (파서 개발·점검용, DB에 쓰지 않음)."""
     from .collectors import dart_doc
 
+    if args.extract:
+        return _probe_extract(args)
     s = make_session()
     tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
     with db.connect() as conn, conn.cursor() as cur:
@@ -632,6 +687,48 @@ def cmd_probe_dart_doc(args) -> int:
                     print("문맥:", tb.context[-220:])
                     print(tb.text(args.max_rows)[:args.max_chars])
     return 0
+
+
+def cmd_report_exposure(args) -> int:
+    """사업보고서 원문에서 기업 고유 거시 노출(환율 민감도·외화 자산부채·수출 비중·외환 파생)을 뽑아 저장.
+    같은 접수번호를 이미 읽었으면 건너뜁니다 (--force 로 다시)."""
+    from . import exposure_parse
+    from .collectors import dart_doc
+
+    s = make_session()
+    bad = 0
+    with db.connect() as conn:
+        for cid, ticker, name, *_ in db.list_companies(conn, "KR"):
+            reports = db.annual_reports(conn, cid)
+            if not reports:
+                _ok(f"KR:{ticker}", "사업보고서 접수번호 없음 (건너뜀)")
+                continue
+            fy = reports[0][1]
+            if not getattr(args, "force", False) and db.report_parsed(conn, cid, fy) in {r[0] for r in reports if r[1] == fy}:
+                continue
+            files, rcept, rdt, last_err = None, None, None, ""
+            for rc, y, dt in reports:
+                if y != fy:
+                    break
+                try:
+                    files, rcept, rdt = dart_doc.fetch_document(s, rc), rc, dt
+                    break
+                except RuntimeError as exc:
+                    last_err = str(exc)
+            if files is None:
+                _fail(f"KR:{ticker}", f"FY{fy} 원문 받기 실패: {last_err}")
+                bad += 1
+                continue
+            res = exposure_parse.extract(files, db.annual_revenue(conn, cid, fy))
+            n = db.save_report_exposure(conn, cid, fy, rcept, res["metrics"], res["found"],
+                                        "ok" if res["found"] else "not_found")
+            if res["risk_text"]:
+                db.upsert_documents(conn, cid, "dart_report", [{
+                    "title": f"FY{fy} 사업보고서 · 환위험 관리", "published_at": rdt,
+                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}#fx-risk",
+                    "summary": res["risk_text"][:500]}])
+            _ok(f"KR:{ticker}", f"FY{fy} {rcept} 지표 {n}개 ({', '.join(res['found']) or '찾지 못함'})")
+    return 1 if bad else 0
 
 
 def cmd_sec(args) -> int:
@@ -1203,11 +1300,17 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
+    a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율 민감도·외화 자산부채·수출 비중·외환 파생")
+    a.add_argument("--force", action="store_true", help="이미 읽은 원문도 다시")
+    a.set_defaults(fn=cmd_report_exposure)
     a = sub.add_parser("probe-dart-doc", help="사업보고서 원문의 노출 관련 표 모양 출력 (DB에 쓰지 않음)")
     a.add_argument("--tickers", default="005930,005380,051910,017670,105560,000660,035420,068270")
     a.add_argument("--max-tables", type=int, default=25)
     a.add_argument("--max-rows", type=int, default=14)
     a.add_argument("--max-chars", type=int, default=1800)
+    a.add_argument("--extract", action="store_true", help="추출기 결과와 실패 사례 출력")
+    a.add_argument("--show-misses", action="store_true")
+    a.add_argument("--limit", type=int, default=1000)
     a.set_defaults(fn=cmd_probe_dart_doc)
     a = sub.add_parser("collect-dart-multi"); a.add_argument("--from-year", type=int, default=date.today().year - 5)
     a.add_argument("--max-seconds", type=float, default=None, help="이 시간을 넘기면 멈추고 다음 실행에서 이어서")

@@ -22,7 +22,9 @@ ROW_RE = re.compile(r"<TR\b[^>]*>(.*?)</TR>", re.S | re.I)
 CELL_RE = re.compile(r"<(TD|TH|TE|TU)\b([^>]*)>(.*?)</\1>", re.S | re.I)
 TAG_RE = re.compile(r"<[^>]+>")
 SPAN_RE = re.compile(r'COLSPAN="?(\d+)"?', re.I)
-UNIT_RE = re.compile(r"단위\s*[:：]\s*([가-힣A-Za-z$,\s]+?)\s*[)\]]")
+ROWSPAN_RE = re.compile(r'ROWSPAN="?(\d+)"?', re.I)
+KRW_UNIT_RE = re.compile(r"원화\s*단위\s*[:：]\s*([가-힣]*원)")
+UNIT_RE = re.compile(r"단위\s*[:：]\s*([가-힣A-Za-z$,\s]+?)\s*[)\],]")
 
 
 @dataclass
@@ -54,26 +56,67 @@ def decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _rows(body: str) -> list[list[str]]:
+    """행 목록. COLSPAN 은 옆으로, ROWSPAN 은 아래 행으로 같은 값을 채웁니다."""
+    rows: list[list[str]] = []
+    carry: dict[int, list] = {}  # 열 위치 → [값, 남은 행 수]
+    for rm in ROW_RE.finditer(body):
+        row: list[str] = []
+        col = 0
+        cells = list(CELL_RE.finditer(rm.group(1)))
+        ci = 0
+        while ci < len(cells) or col in carry:
+            if col in carry:
+                val, left = carry[col]
+                row.append(val)
+                if left <= 1:
+                    del carry[col]
+                else:
+                    carry[col] = [val, left - 1]
+                col += 1
+                continue
+            cm = cells[ci]
+            ci += 1
+            val = clean(cm.group(3))
+            attrs = cm.group(2) or ""
+            span = SPAN_RE.search(attrs)
+            rspan = ROWSPAN_RE.search(attrs)
+            for _ in range(int(span.group(1)) if span else 1):
+                if rspan and int(rspan.group(1)) > 1:
+                    carry[col] = [val, int(rspan.group(1)) - 1]
+                row.append(val)
+                col += 1
+        if any(row):
+            rows.append(row)
+    return rows
+
+
+def _unit(text: str) -> str | None:
+    m = KRW_UNIT_RE.search(text) or UNIT_RE.search(text)
+    return re.sub(r"\s+", "", m.group(1)) if m else None
+
+
 def tables_from_xml(text: str, file: str = "") -> list[Table]:
-    out = []
+    """표 목록. '(단위: 백만원)'만 있는 표는 바로 다음 표에 단위·문맥을 넘기고 뺍니다."""
+    out: list[Table] = []
     last = 0
+    pending: tuple[str, str | None] | None = None  # 단위만 있던 표의 (문맥, 단위)
     for i, m in enumerate(TABLE_RE.finditer(text)):
         before = clean(text[max(last, m.start() - 4000):m.start()])[-400:]
         last = m.end()
-        rows = []
-        for rm in ROW_RE.finditer(m.group(1)):
-            row = []
-            for cm in CELL_RE.finditer(rm.group(1)):
-                val = clean(cm.group(3))
-                span = SPAN_RE.search(cm.group(2) or "")
-                row.extend([val] * (int(span.group(1)) if span else 1))
-            if any(row):
-                rows.append(row)
+        rows = _rows(m.group(1))
         if not rows:
             continue
-        head = before + " " + " ".join(rows[0])
-        um = UNIT_RE.search(head) or UNIT_RE.search(" ".join(" ".join(r) for r in rows[:2]))
-        unit = re.sub(r"\s+", "", um.group(1)) if um else None
+        flat = " ".join(" ".join(r) for r in rows[:2])
+        unit = _unit(before[-120:] + " " + flat)
+        digits = re.sub(r"[^0-9]", "", re.sub(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", "", flat))
+        if len(rows) == 1 and "단위" in flat and len(digits) < 6:
+            pending = (before, unit)
+            continue
+        if pending:
+            before = (pending[0] + " " + before).strip()[-400:]
+            unit = unit or pending[1]
+            pending = None
         title_m = re.findall(r"(?:\(\d+\)|\d+\)|[가-하]\.|\d+\.)\s*[^.()]{2,40}", before)
         out.append(Table(rows=rows, context=before, unit=unit, file=file, index=i,
                          title=title_m[-1].strip() if title_m else ""))
