@@ -78,10 +78,16 @@ def cmd_check_db(args) -> int:
 
 
 def cmd_apply_schema(args) -> int:
+    busy: list[str] = []
     with db.connect() as conn:
-        for name in db.apply_schema(conn):
+        for name in db.apply_schema(conn, lock_timeout=SCHEMA_LOCK_TIMEOUT, busy=busy):
             _ok("적용", name)
-    return 0
+    for name in busy:
+        _fail(name, f"다른 연결이 테이블을 쓰고 있어 잠금을 {SCHEMA_LOCK_TIMEOUT} 안에 못 잡음 → 건너뜀 (다음 실행에서 다시)")
+    return 1 if busy else 0
+
+
+SCHEMA_LOCK_TIMEOUT = "5s"  # 스키마 적용이 잠금을 기다리는 최대 시간 (그동안 같은 테이블의 다른 조회도 막힘)
 
 
 def cmd_check_sources(args) -> int:
