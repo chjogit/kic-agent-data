@@ -773,7 +773,7 @@ def cmd_lending(args) -> int:
         n = sum(db.upsert_lending(conn, cid, rows, "fsc_lending") for cid, rows in by_cid.items())
     # 최근 1~2 영업일은 아직 공개 전일 수 있음. 며칠 지난 날짜도 0건이면 승인·엔드포인트 문제로 보고 실패로 남김
     if n == 0 and not bad and min(todo) <= today - timedelta(days=4):
-        _fail("대차거래", "0건: 활용신청 승인·엔드포인트를 확인하세요")
+        _fail("대차거래", f"0건 ({', '.join(str(d) for d in sorted(todo))}): 활용신청 승인·엔드포인트를 확인하세요")
         return 1
     _ok("대차거래", f"{len(todo)}일 요청 중 {days}거래일 수신 ({min(todo)}~{max(todo)}), {len(by_cid)}/{len(ids)}종목, {n}행")
     return 1 if bad else 0
