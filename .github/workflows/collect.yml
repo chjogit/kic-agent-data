@@ -2,6 +2,10 @@
 # 저장소 Settings → Secrets and variables → Actions → New repository secret 에 키를 넣으세요 (docs/AUTO_RUN.md).
 # 없는 키는 그 작업만 '건너뜀' 으로 처리되므로 DATABASE_URL 만 있어도 시작할 수 있습니다.
 #
+# 원천 API 별로 줄(lane)을 나눠 병렬로 돕니다 (kic_data/jobs.py 의 LANES). 같은 API 는 한 줄에만 있어서
+# 동시 호출이 늘지 않고, 줄마다 20분 예산이라 한 줄이 밀려도 다른 줄의 작업은 제때 돕니다.
+#   준비(스키마·종목 마스터) → dart · public · naver · naver_etc · global 동시 → 계산(감성·TTM·Peer·지표)
+#
 # 사용량: 이 저장소는 공개(public)라 Actions 시간이 무제한입니다 (비공개로 돌리면 월 2,000분 한도라
 #   KOSPI 200 규모에서는 cron 을 6~8시간 간격으로 줄여야 합니다).
 name: kic-collect
@@ -17,10 +21,26 @@ on:
 concurrency:
   group: kic-collect
   cancel-in-progress: false
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  FSC_API_KEY: ${{ secrets.FSC_API_KEY }}
+  DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+  DART_API_KEY: ${{ secrets.DART_API_KEY }}
+  SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+  NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+  NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+  NCP_APIHUB_KEY_ID: ${{ secrets.NCP_APIHUB_KEY_ID }}
+  NCP_APIHUB_KEY: ${{ secrets.NCP_APIHUB_KEY }}
+  ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+  FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+  FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+  YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+  PYTHONIOENCODING: utf-8
+  ONLY: ${{ github.event.inputs.only }}
 jobs:
-  collect:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,22 +48,41 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: 수집 실행
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          FSC_API_KEY: ${{ secrets.FSC_API_KEY }}
-          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
-          DART_API_KEY: ${{ secrets.DART_API_KEY }}
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
-          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
-          NCP_APIHUB_KEY_ID: ${{ secrets.NCP_APIHUB_KEY_ID }}
-          NCP_APIHUB_KEY: ${{ secrets.NCP_APIHUB_KEY }}
-          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          PYTHONIOENCODING: utf-8
+      - name: 준비 (스키마·종목 마스터)
         run: |
           if [ -z "$DATABASE_URL" ]; then echo "DATABASE_URL 시크릿이 없습니다"; exit 1; fi
-          python -m kic_data.cli tick --budget 1200 --summary "$GITHUB_STEP_SUMMARY" ${{ github.event.inputs.only && format('--only "{0}"', github.event.inputs.only) || '' }}
+          python -m kic_data.cli tick --lane 준비 --budget 600 --summary "$GITHUB_STEP_SUMMARY" ${ONLY:+--only "$ONLY"}
+
+  collect:
+    needs: prepare
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [dart, public, naver, naver_etc, global]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 수집 (${{ matrix.lane }})
+        run: python -m kic_data.cli tick --lane "${{ matrix.lane }}" --budget 1200 --summary "$GITHUB_STEP_SUMMARY" ${ONLY:+--only "$ONLY"}
+
+  calculate:
+    needs: collect
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 계산 (감성·TTM·Peer·지표)
+        run: python -m kic_data.cli tick --lane 계산 --budget 900 --summary "$GITHUB_STEP_SUMMARY" ${ONLY:+--only "$ONLY"}

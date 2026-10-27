@@ -166,6 +166,28 @@ PREP_JOBS = ("sync-dart-codes", "company-info")
 DART_FOLLOWUPS = ("company-info", "backfill-disclosures", "backfill-dart-annual", "backfill-dart-quarterly")
 JOB_BY_NAME = {j.name: j for j in JOBS}
 
+# 병렬 실행 줄(lane): GitHub Actions 가 줄마다 따로 tick 을 돌려 같은 시간에 함께 수집합니다.
+# 같은 원천 API 는 한 줄에만 두어 동시 호출로 한도·차단 위험이 커지지 않게 합니다 (원천은 quality.API_OF_JOB).
+# 준비(스키마·종목 마스터)는 다른 줄보다 먼저, 계산(감성·TTM·Peer·지표)은 수집 줄이 끝난 뒤에 돕니다.
+PREP_LANE, CALC_LANE = "준비", "계산"
+PREP_LANE_JOBS = ("apply-schema", "seed-companies", "sync-kospi200")
+LANE_OF_API = {
+    "dart": "dart", "sec": "dart",                      # 공시·재무
+    "fsc": "public", "data.go.kr": "public",            # 공공데이터포털 (같은 게이트웨이)
+    "naver": "naver",                                   # 네이버 검색 API (뉴스·블로그·카페·언급량)
+    "naver_datalab": "naver_etc", "naver_finance": "naver_etc",
+    "yfinance": "global", "ecos·fred": "global", "finnhub": "global", "youtube": "global",
+}
+COLLECT_LANES = ("dart", "public", "naver", "naver_etc", "global")
+LANES = (PREP_LANE, *COLLECT_LANES, CALC_LANE)
+
+
+def lane_of(job: Job) -> str:
+    if job.name in PREP_LANE_JOBS:
+        return PREP_LANE
+    api = quality.API_OF_JOB.get(job.name)
+    return LANE_OF_API[api] if api else CALC_LANE
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -267,15 +289,17 @@ class DbState:
             return [dict(zip(cols, r)) for r in rows]
         return self._run(q)
 
-    def try_lock(self) -> bool:
+    def try_lock(self, key: str = "kic_jobs_tick") -> bool:
         # Neon 풀러(-pooler) 주소는 트랜잭션 단위로 연결을 바꿔 써서 세션 잠금이 보장되지 않습니다.
         # 이때는 잠금을 생략하고 GitHub Actions 의 concurrency 설정(동시 실행 1개)에 맡깁니다.
+        # 병렬 실행 줄은 key 를 줄마다 달리 줘서 서로 막지 않습니다 (한 작업은 한 줄에만 있음).
         if "-pooler" in (os.environ.get("DATABASE_URL") or ""):
             return True
         with self.conn.cursor() as cur:
-            cur.execute("SELECT pg_try_advisory_lock(hashtext('kic_jobs_tick'))")
+            cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", [key])
             ok = cur.fetchone()[0]
         self.conn.commit()
+        self._lock_key = key
         return bool(ok)
 
     def unlock(self) -> None:
@@ -283,7 +307,7 @@ class DbState:
             return
         try:
             with self.conn.cursor() as cur:
-                cur.execute("SELECT pg_advisory_unlock(hashtext('kic_jobs_tick'))")
+                cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", [getattr(self, "_lock_key", "kic_jobs_tick")])
             self.conn.commit()
         except Exception:  # noqa: BLE001  연결이 끊겼으면 잠금도 이미 풀림
             pass
@@ -468,8 +492,8 @@ BACKFILL_SHARE = 0.5  # 과거분이 예산을 다 쓰면 매시간 시세·공�
 
 
 def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 280.0, only: str | None = None,
-         commands=None, getenv=None, clock=time.monotonic, universe_for=None) -> dict:
-    """차례가 된 작업을 시간 예산 안에서 순서대로 실행합니다."""
+         lane: str | None = None, commands=None, getenv=None, clock=time.monotonic, universe_for=None) -> dict:
+    """차례가 된 작업을 시간 예산 안에서 순서대로 실행합니다. lane 을 주면 그 줄의 작업만."""
     getenv = getenv or (lambda k: os.environ.get(k))
     budget = budget if budget is not None else float(getenv("TICK_BUDGET_SECONDS") or 240)
     t0 = clock()
@@ -477,6 +501,8 @@ def tick(state, *, conn=None, budget: float | None = None, hard_limit: float = 2
     states = state.all()
     for job in JOBS:
         if only and job.group != only and job.name != only:
+            continue
+        if lane and lane_of(job) != lane:
             continue
         st = states.get(job.name)
         reason = due_reason(job, st, _now(), job.missing_env(getenv))

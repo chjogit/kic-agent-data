@@ -1085,13 +1085,16 @@ def cmd_tick(args) -> int:
         _ok("DB 스키마", "처음 실행이라 sql/*.sql 적용")
     state = jobs.DbState(conn, connect=db.connect)
     try:
-        if not state.try_lock():
+        if not state.try_lock(f"kic_jobs_tick:{args.lane}" if args.lane else "kic_jobs_tick"):
             print("다른 실행이 진행 중이라 건너뜁니다.")
             return 0
         try:
-            result = jobs.tick(state, conn=conn, budget=args.budget, hard_limit=args.budget + 300, only=args.only)
+            result = jobs.tick(state, conn=conn, budget=args.budget, hard_limit=args.budget + 300, only=args.only,
+                               lane=args.lane)
             state.prune()
             ov = jobs.overview(state)
+            if args.lane:  # 실행 요약에는 이 줄의 작업만
+                ov = [o for o in ov if jobs.lane_of(jobs.JOB_BY_NAME[o["name"]]) == args.lane]
         finally:
             state.unlock()
     finally:
@@ -1162,6 +1165,7 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-macro"); a.add_argument("--years", type=int, default=5); a.set_defaults(fn=cmd_macro)
     a = sub.add_parser("tick"); a.add_argument("--budget", type=float, default=1200, help="새 작업을 시작할 수 있는 시간(초)")
     a.add_argument("--only", default=None, help="이 묶음(group) 또는 작업 이름만"); a.add_argument("--summary", default=None, help="결과표(마크다운)를 덧붙일 파일")
+    a.add_argument("--lane", default=None, help="병렬 실행 줄 하나만 (jobs.LANES: 준비, dart, public, naver, naver_etc, global, 계산)")
     a.set_defaults(fn=cmd_tick)
     a = sub.add_parser("collect-etf"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_etf)
     a = sub.add_parser("collect-finnhub"); a.add_argument("--days", type=int, default=7); a.set_defaults(fn=cmd_finnhub)
