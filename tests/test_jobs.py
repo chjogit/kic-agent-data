@@ -471,3 +471,33 @@ def test_workflow_matrix_matches_collect_lanes():
     text = (Path(__file__).resolve().parents[1] / ".github/workflows/collect.yml").read_text(encoding="utf-8")
     assert f"lane: [{', '.join(jobs.COLLECT_LANES)}]" in text
     assert f"--lane {jobs.PREP_LANE}" in text and f"--lane {jobs.CALC_LANE}" in text
+
+
+def test_apply_schema_skips_locked_file_instead_of_waiting(tmp_path, monkeypatch):
+    import psycopg
+
+    (tmp_path / "001_a.sql").write_text("SELECT 1", encoding="utf-8")
+    (tmp_path / "002_alter.sql").write_text("ALTER TABLE t ADD COLUMN IF NOT EXISTS x int", encoding="utf-8")
+    monkeypatch.setattr(db, "SQL_DIR", tmp_path)
+    sent, state = [], {"rolled_back": 0}
+
+    class Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql):
+            sent.append(sql)
+            if sql.startswith("ALTER"):  # 다른 연결이 테이블을 쓰고 있어 잠금을 못 잡음
+                raise psycopg.errors.LockNotAvailable("lock timeout")
+
+    conn = SimpleNamespace(cursor=Cur, commit=lambda: None,
+                           rollback=lambda: state.__setitem__("rolled_back", state["rolled_back"] + 1))
+    busy = []
+    assert db.apply_schema(conn, lock_timeout="5s", busy=busy) == ["001_a.sql"]
+    assert busy == ["002_alter.sql"] and state["rolled_back"] == 1
+    assert "SET LOCAL lock_timeout = '5s'" in sent
+    with pytest.raises(psycopg.errors.LockNotAvailable):  # busy 를 안 넘기면(처음 적용) 그대로 실패
+        db.apply_schema(conn, lock_timeout="5s")
