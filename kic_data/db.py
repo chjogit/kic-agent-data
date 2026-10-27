@@ -166,6 +166,54 @@ def save_report_exposure(conn, company_id: int, fiscal_year: int, rcept_no: str,
     return len(metrics)
 
 
+def periodic_fetched(conn, company_id: int) -> set[tuple]:
+    """이미 받은 (api, 사업연도, 보고서 코드) 묶음."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT api, fiscal_year, reprt_code FROM ops.dart_periodic_fetch WHERE company_id = %s",
+                    [company_id])
+        return set(cur.fetchall())
+
+
+def save_periodic(conn, company_id: int, api: str, fiscal_year: int, reprt_code: str, rows: list[dict]) -> int:
+    """정기보고서 주요정보 한 묶음을 통째로 교체하고 받은 기록을 남깁니다 (한 트랜잭션).
+    api: bond·cp·stb → core.debt_balance, issue → core.debt_issue, receivable → core.financial_fact(dart_full)."""
+    key = [company_id, fiscal_year, reprt_code]
+    with conn.cursor() as cur:
+        if api in ("bond", "cp", "stb"):
+            cur.execute("DELETE FROM core.debt_balance WHERE company_id = %s AND fiscal_year = %s AND reprt_code = %s "
+                        "AND kind = %s", key + [api])
+            cur.executemany(
+                "INSERT INTO core.debt_balance (company_id, fiscal_year, reprt_code, kind, label, bucket, amount_raw, "
+                "stlm_dt, rcept_no) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                [key + [api, r["label"], r["bucket"], r["amount_raw"], r["stlm_dt"], r["rcept_no"]] for r in rows])
+        elif api == "issue":
+            cur.execute("DELETE FROM core.debt_issue WHERE company_id = %s AND fiscal_year = %s AND reprt_code = %s", key)
+            cols = ("seq", "issuer", "kind_nm", "method", "issue_date", "face_amount_raw", "rate", "rating",
+                    "maturity_date", "repaid", "underwriter", "stlm_dt", "rcept_no")
+            cur.executemany(
+                f"INSERT INTO core.debt_issue (company_id, fiscal_year, reprt_code, {', '.join(cols)}) "
+                f"VALUES ({', '.join(['%s'] * (3 + len(cols)))}) ON CONFLICT DO NOTHING",
+                [key + [r[c] for c in cols] for r in rows])
+        elif api == "receivable":
+            cur.execute("DELETE FROM core.financial_fact WHERE company_id = %s AND fiscal_year = %s AND report_code = %s "
+                        "AND source = 'dart_full'", key)
+            cur.executemany(
+                "INSERT INTO core.financial_fact (company_id, source, fiscal_year, report_code, fs_div, sj_div, "
+                "account_id, account_nm, amount, currency, rcept_no, period_end) "
+                "VALUES (%s, 'dart_full', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                [[company_id, fiscal_year, reprt_code, r["fs_div"], r["sj_div"], r["account_id"], r["account_nm"],
+                  r["amount"], r["currency"], r["rcept_no"], r["period_end"]] for r in rows])
+        else:
+            raise ValueError(api)
+        cur.execute(
+            "INSERT INTO ops.dart_periodic_fetch (company_id, api, fiscal_year, reprt_code, status, n_rows) "
+            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (company_id, api, fiscal_year, reprt_code) DO UPDATE SET "
+            "status = EXCLUDED.status, n_rows = EXCLUDED.n_rows, fetched_at = now()",
+            [company_id, api, fiscal_year, reprt_code, "ok" if rows else "no_data", len(rows)])
+    conn.commit()
+    return len(rows)
+
+
 def docs_without_chunks(conn, source: str, limit: int | None = None) -> list[tuple]:
     """아직 청크가 없는 문서 → [(doc_id, title, summary)]"""
     sql = (
