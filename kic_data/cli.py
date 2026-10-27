@@ -587,6 +587,53 @@ def cmd_dart_multi(args) -> int:
     return 1 if bad else 0
 
 
+PROBE_KEYS = {
+    "환율민감도": (("환율",), ("민감도", "변동", "상승", "하락")),
+    "외화자산부채": (("외화",), ("자산", "부채")),
+    "수출내수": (("수출",), ("내수", "국내")),
+    "지역별": (("지역",), ("국내", "해외", "아시아", "미주", "유럽", "중국")),
+    "파생헤지": (("통화선도", "통화스왑", "위험회피", "파생상품"), ("",)),
+}
+
+
+def cmd_probe_dart_doc(args) -> int:
+    """사업보고서 원문에서 노출 관련 표가 어떤 모양인지 출력합니다 (파서 개발·점검용, DB에 쓰지 않음)."""
+    from .collectors import dart_doc
+
+    s = make_session()
+    tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
+    with db.connect() as conn, conn.cursor() as cur:
+        for t in tickers:
+            cur.execute(
+                "SELECT d.rcept_no, d.report_nm FROM core.disclosure d JOIN core.company c USING (company_id) "
+                "WHERE c.market = 'KR' AND c.ticker = %s AND d.event_type = 'annual_report' "
+                "ORDER BY d.rcept_dt DESC, d.rcept_no DESC LIMIT 1", [t])
+            row = cur.fetchone()
+            if not row:
+                print(f"\n##### {t}: 사업보고서 접수번호 없음")
+                continue
+            rcept, nm = row
+            try:
+                files = dart_doc.fetch_document(s, rcept)
+            except RuntimeError as exc:
+                print(f"\n##### {t} {nm} {rcept}: {exc}")
+                continue
+            print(f"\n##### {t} {nm} {rcept} 파일 {[(n, len(v)) for n, v in files.items()]}")
+            shown = 0
+            for name, text in files.items():
+                for tb in dart_doc.tables_from_xml(text, name):
+                    blob = tb.context[-200:] + " " + tb.text(6)
+                    hits = [k for k, (a, b) in PROBE_KEYS.items()
+                            if any(x in blob for x in a) and any(y in blob for y in b)]
+                    if not hits or shown >= args.max_tables:
+                        continue
+                    shown += 1
+                    print(f"\n--- [{','.join(hits)}] {name} 표#{tb.index} 단위={tb.unit} 제목={tb.title!r}")
+                    print("문맥:", tb.context[-220:])
+                    print(tb.text(args.max_rows)[:args.max_chars])
+    return 0
+
+
 def cmd_sec(args) -> int:
     s = make_session()
     tmap = sec.fetch_ticker_map(s)
@@ -1156,6 +1203,12 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
+    a = sub.add_parser("probe-dart-doc", help="사업보고서 원문의 노출 관련 표 모양 출력 (DB에 쓰지 않음)")
+    a.add_argument("--tickers", default="005930,005380,051910,017670,105560,000660,035420,068270")
+    a.add_argument("--max-tables", type=int, default=25)
+    a.add_argument("--max-rows", type=int, default=14)
+    a.add_argument("--max-chars", type=int, default=1800)
+    a.set_defaults(fn=cmd_probe_dart_doc)
     a = sub.add_parser("collect-dart-multi"); a.add_argument("--from-year", type=int, default=date.today().year - 5)
     a.add_argument("--max-seconds", type=float, default=None, help="이 시간을 넘기면 멈추고 다음 실행에서 이어서")
     a.add_argument("--reports", default="11011", help="11011 사업, 11013 1분기, 11012 반기, 11014 3분기")
