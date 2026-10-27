@@ -306,7 +306,9 @@ def fx_derivative(tables: list[Table]) -> Metric | None:
 
 def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
     """원문 파일들 → {'metrics': [Metric], 'risk_text': 환위험 관리 서술(RAG용), 'found': {...}}.
-    본문(접수번호.xml) → 첨부(감사보고서) 순으로 보고, 지표마다 처음 찾은 표를 씁니다."""
+    본문(접수번호.xml) → 첨부(감사보고서) 순으로 보고, 지표마다 처음 찾은 표를 씁니다.
+    환율 민감도는 같은 파일 안에 표가 여럿이면(연결·별도, 지주사의 종속회사 표) 절댓값 합이 가장 큰 표를 씁니다.
+    연결 기준 표가 종속회사·별도 표보다 크기 때문입니다."""
     from .collectors.dart_doc import tables_from_xml
 
     metrics: list[Metric] = []
@@ -316,13 +318,14 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
     for name, text in files.items():
         tables = tables_from_xml(text, name)
         all_tables += tables
+        if "fx_sens" not in got:
+            cands = [(ms, t) for t in tables if _is_sensitivity(t) for ms in [sensitivity(t)] if ms]
+            if cands:
+                ms, t = max(cands, key=lambda c: sum(abs(m.value) for m in c[0]))
+                metrics += ms
+                got.add("fx_sens")
+                risk_text = risk_text or t.context
         for t in tables:
-            if "fx_sens" not in got and _is_sensitivity(t):
-                ms = sensitivity(t)
-                if ms:
-                    metrics += ms
-                    got.add("fx_sens")
-                    risk_text = risk_text or t.context
             if "fx_pos" not in got and _is_fx_position(t):
                 ms = fx_position(t)
                 if ms:

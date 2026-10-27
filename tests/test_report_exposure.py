@@ -118,3 +118,12 @@ def test_fx_derivative_and_risk_text():
 def test_nothing_found_returns_empty():
     res = ep.extract({"a.xml": _t([["구분", "금액"], ["토지", "1,000"]])})
     assert res == {"metrics": [], "risk_text": "", "found": []}
+
+
+def test_sensitivity_picks_largest_table_in_file():   # 지주사: 종속회사 표(작음)보다 연결 표(큼)를 씀
+    small = _t([["구분", "1% 상승시", "1% 하락시"], ["USD", "12", "(12)"]],
+               before="종속회사 A의 환율이 1% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    big = _t([["구분", "10% 상승시", "10% 하락시"], ["USD", "(92,568)", "92,568"]],
+             before="연결실체의 환율이 10% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    (s,) = [k for k in ep.extract({"a.xml": small + big})["metrics"] if k.metric == "fx_sens"]
+    assert s.value == -92_568e6 and s.change_pct == 10

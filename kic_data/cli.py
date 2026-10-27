@@ -636,6 +636,11 @@ def _probe_extract(args) -> int:
             print(f"{ticker} {name} FY{fy}: {res['found']} | USD민감도="
                   f"{'-' if not usd else f'{usd.value/1e8:,.0f}억 ({usd.change_pct}% {usd.basis})'}"
                   f" | 수출비중={'-' if not exp else f'{exp.value:.1f}%'}")
+            sens = [m for m in res["metrics"] if m.metric == "fx_sens"]
+            if sens:
+                tot = sum(m.value for m in sens)
+                print(f"   ↳ 민감도 표 {sens[0].file}#{sens[0].table_index} 합계 {tot/1e8:,.0f}억 "
+                      f"통화 {[m.currency for m in sens]} 문맥={sens[0].evidence[-100:]!r}")
             if "fx_sens" not in res["found"] and args.show_misses:
                 shown = 0
                 for fname, text in files.items():
