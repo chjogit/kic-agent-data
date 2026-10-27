@@ -381,3 +381,59 @@ def test_etf_uses_v2_endpoint_and_inclusive_end(monkeypatch):
     assert calls["params"]["endBasDt"] == "20261024" and calls["params"]["beginBasDt"] == "20261001"
     assert [r["ticker"] for r in rows] == ["069500"]
     assert etf.next_ymd("20261231") == "20270101"
+
+
+def test_run_job_more_keeps_job_due_until_done():
+    st = MemState()
+    job = jobs.Job("bf", "bf", "cmd_x", every=jobs.ONCE, group="과거분(1회)")
+    rcs = iter([jobs.MORE, 0])
+    r1 = jobs.run_job(job, st, commands=SimpleNamespace(cmd_x=lambda ns: next(rcs)), getenv=env_all)
+    assert r1["status"] == "partial" and r1["more"] and not st.rows["bf"].get("last_complete")
+    r2 = jobs.run_job(job, st, commands=SimpleNamespace(cmd_x=lambda ns: next(rcs)), getenv=env_all)
+    assert r2["status"] == "ok" and st.rows["bf"].get("last_complete")
+
+
+def test_report_due_dates():
+    from datetime import date
+
+    from kic_data import cli
+
+    today = date(2026, 10, 27)
+    assert cli.report_due(2026, "11012", today) and cli.report_due(2026, "11013", today)
+    assert not cli.report_due(2026, "11014", today)          # 3분기 보고서는 11/14 기한
+    assert cli.report_due(2025, "11011", today) and not cli.report_due(2026, "11011", today)
+
+
+def test_dart_multi_skips_covered_and_stops_on_budget(monkeypatch):
+    from contextlib import contextmanager
+
+    from kic_data import cli
+    from kic_data.collectors import dart
+
+    companies = [(i, f"{i:06d}", f"c{i}", f"C{i:07d}", None) for i in range(1, 251)]  # 3묶음 (100, 100, 50)
+
+    @contextmanager
+    def fake_connect():
+        yield None
+
+    calls = []
+    monkeypatch.setattr(cli.db, "connect", fake_connect)
+    monkeypatch.setattr(cli.db, "list_companies", lambda conn, m: companies)
+    monkeypatch.setattr(cli.db, "fact_companies", lambda conn, y, code, src: set(range(1, 101)))  # 첫 묶음은 이미 있음
+    monkeypatch.setattr(cli.db, "upsert_facts", lambda conn, cid, rows, src: len(rows))
+    monkeypatch.setattr(cli, "make_session", lambda: None)
+
+    def fetch(s, chunk, year, code):
+        calls.append((year, code, chunk[0]))
+        return {chunk[0]: [{"x": 1}]}
+
+    monkeypatch.setattr(dart, "fetch_multi", fetch)
+    args = SimpleNamespace(from_year=2025, reports="11013", max_seconds=None)
+    assert cli.cmd_dart_multi(args) == 0
+    assert [c[2] for c in calls if c[0] == 2025] == ["C0000101", "C0000201"]  # 첫 묶음 건너뜀
+    calls.clear()
+    ticks = iter([0.0, 0.0, 999.0, 999.0, 999.0])
+    monkeypatch.setattr("time.monotonic", lambda: next(ticks))
+    args = SimpleNamespace(from_year=2025, reports="11013", max_seconds=10)
+    assert cli.cmd_dart_multi(args) == jobs.MORE
+    assert len(calls) == 1

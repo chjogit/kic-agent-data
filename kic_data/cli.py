@@ -521,11 +521,33 @@ def cmd_dart(args) -> int:
     return 0
 
 
+# 정기보고서 제출 기한 (월, 일). 연도 + 이 날짜가 지나야 받을 자료가 있음 (사업보고서는 다음 해)
+REPORT_DUE = {"11013": (5, 15), "11012": (8, 14), "11014": (11, 14), "11011": (3, 31)}
+COVERED_SHARE = 0.9  # 묶음 안 회사의 이 비율 이상이 이미 있으면 다시 받지 않음
+
+
+def report_due(year: int, code: str, today: date) -> bool:
+    m, d = REPORT_DUE.get(code, (1, 1))
+    return today >= date(year + 1 if code == dart.REPORT_ANNUAL else year, m, d)
+
+
 def cmd_dart_multi(args) -> int:
-    """DART 다중회사 주요계정: 100개 회사씩 묶어 연도·보고서별로 한 번에 받습니다 (KOSPI 200 용)."""
+    """DART 다중회사 주요계정: 100개 회사씩 묶어 연도·보고서별로 한 번에 받습니다 (KOSPI 200 용).
+
+    분기 2년치는 한 번에 50분 넘게 걸려 GitHub Actions 제한(40분)에 끊겼습니다. 그래서
+    - 제출 기한이 지나지 않은 보고서는 건너뛰고,
+    - 묶음 안 회사의 90% 이상이 이미 받은 연도·보고서는 다시 받지 않으며,
+    - --max-seconds 를 넘기면 멈추고 jobs.MORE 를 돌려 다음 실행에서 이어 받습니다.
+    """
+    import time
+
+    from .jobs import MORE
+
     s = make_session()
     reports = [r.strip() for r in args.reports.split(",") if r.strip()]
     last_year = date.today().year if any(r != dart.REPORT_ANNUAL for r in reports) else date.today().year - 1
+    limit = getattr(args, "max_seconds", None)
+    t0 = time.monotonic()
     bad = 0
     with db.connect() as conn:
         companies = [c for c in db.list_companies(conn, "KR") if c[3]]
@@ -535,9 +557,20 @@ def cmd_dart_multi(args) -> int:
             by_key[corp_code] = cid
         for year in range(args.from_year, last_year + 1):
             for code in reports:
-                n = got = 0
+                if not report_due(year, code, date.today()):
+                    print(f"[SKIP] {year} {code} 제출 기한 전")
+                    continue
+                have = db.fact_companies(conn, year, code, "dart")
+                n = got = skipped = 0
                 for i in range(0, len(companies), dart.MULTI_MAX):
-                    chunk = [c[3] for c in companies[i:i + dart.MULTI_MAX]]
+                    part = companies[i:i + dart.MULTI_MAX]
+                    if sum(c[0] in have for c in part) >= COVERED_SHARE * len(part):
+                        skipped += len(part)
+                        continue
+                    if limit and time.monotonic() - t0 > limit:
+                        _ok(f"{year} {code}", f"{got}개사 {n}행 · 시간 예산 {limit}초 도달, 다음 실행에서 이어서")
+                        return MORE
+                    chunk = [c[3] for c in part]
                     try:
                         result = dart.fetch_multi(s, chunk, year, code)
                     except RuntimeError as exc:
@@ -550,7 +583,7 @@ def cmd_dart_multi(args) -> int:
                             continue
                         got += 1
                         n += db.upsert_facts(conn, cid, rows, "dart")
-                _ok(f"{year} {code}", f"{got}/{len(companies)}개사 {n}행")
+                _ok(f"{year} {code}", f"{got}/{len(companies)}개사 {n}행" + (f" (이미 있음 {skipped}개사 건너뜀)" if skipped else ""))
     return 1 if bad else 0
 
 
@@ -1121,6 +1154,7 @@ def main(argv=None) -> int:
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
     a = sub.add_parser("collect-dart-multi"); a.add_argument("--from-year", type=int, default=date.today().year - 5)
+    a.add_argument("--max-seconds", type=float, default=None, help="이 시간을 넘기면 멈추고 다음 실행에서 이어서")
     a.add_argument("--reports", default="11011", help="11011 사업, 11013 1분기, 11012 반기, 11014 3분기")
     a.set_defaults(fn=cmd_dart_multi)
     sub.add_parser("build-peer-groups").set_defaults(fn=cmd_build_peers)
