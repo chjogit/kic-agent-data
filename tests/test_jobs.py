@@ -325,3 +325,41 @@ def test_new_macro_series_backfill_start(monkeypatch):
     monkeypatch.setattr(db, "has_macro", lambda conn, sid: sid == "OLD")
     assert cli._macro_start(None, "OLD", start) == start
     assert cli._macro_start(None, "NEW", start) <= date.today() - timedelta(days=365 * 5)
+
+def test_sync_kospi200_resets_prep_jobs():
+    names = [j.name for j in jobs.JOBS]
+    assert set(jobs.PREP_JOBS) <= set(names) and set(jobs.DART_FOLLOWUPS) <= set(names)
+    # 준비 작업이 과거분보다 앞에 있어야 같은 실행 안에서 고유번호가 먼저 채워짐
+    for prep in jobs.PREP_JOBS:
+        assert names.index(prep) < names.index("backfill-dart-annual")
+
+
+def test_sync_dart_resets_followups_only_for_newly_linked(monkeypatch):
+    from contextlib import contextmanager
+
+    from kic_data import cli, db
+    from kic_data.collectors import dart
+
+    resets = []
+
+    @contextmanager
+    def fake_connect():
+        yield object()
+
+    monkeypatch.setattr(cli, "make_session", lambda: None)
+    monkeypatch.setattr(dart, "fetch_corp_codes", lambda s: [{"stock_code": "005930", "corp_code": "00126380"},
+                                                             {"stock_code": "000660", "corp_code": "00164779"}])
+    monkeypatch.setattr(db, "connect", fake_connect)
+    monkeypatch.setattr(db, "get_or_create_company", lambda *a, **k: 1)
+    monkeypatch.setattr(jobs, "reset_backfills", lambda conn, names: resets.append(tuple(names)))
+
+    # 이미 연결된 종목만 있으면 다시 받지 않음
+    monkeypatch.setattr(db, "list_companies", lambda conn, m: [(1, "005930", "삼성전자", "00126380", None)])
+    assert cli.cmd_sync_dart(None) == 0
+    assert resets == []
+
+    # 고유번호가 없던 종목이 새로 연결되면 업종·공시·재무 과거분을 다시 받음
+    monkeypatch.setattr(db, "list_companies", lambda conn, m: [(1, "005930", "삼성전자", "00126380", None),
+                                                               (2, "000660", "SK하이닉스", None, None)])
+    assert cli.cmd_sync_dart(None) == 0
+    assert resets == [jobs.DART_FOLLOWUPS]
