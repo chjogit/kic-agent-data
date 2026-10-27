@@ -130,3 +130,13 @@ def test_sensitivity_prefers_consolidated_notes_section():   # 지주사: 앞쪽
     (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
     assert s.value == 400e6
     assert dart_doc.tables_from_xml(x)[0].extra["section"] == "II. 사업의 내용"
+
+
+def test_sensitivity_risk_section_beats_mdna():   # 한화: 경영진 분석(3. 재무상태 및 영업실적)의 1% 표보다 위험관리 절
+    mdna = _t([["구분", "1% 상승시", "1% 하락시"], ["USD", "12", "(12)"]],
+              before="연결실체의 환율이 1% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    risk = _t([["구분", "10% 상승시", "10% 하락시"], ["USD", "(92,568)", "92,568"]],
+              before="연결실체의 환율이 10% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    x = "<TITLE>3. 재무상태 및 영업실적</TITLE>" + mdna + "<TITLE>5. 위험관리 및 파생거래</TITLE>" + risk
+    (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
+    assert s.value == -92_568e6
