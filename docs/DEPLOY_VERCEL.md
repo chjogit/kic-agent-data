@@ -29,7 +29,7 @@ Vercel 에는 쓰기 권한이 없는 계정의 연결 문자열을 넣는 것�
 3. Neon **Connect** 에서 복사한 연결 문자열의 `사용자:비밀번호` 부분을 `kic_readonly:여기에_비밀번호` 로 바꿔
    Vercel 환경변수 `DATABASE_URL` 에 넣고 Redeploy.
 
-읽기 전용 계정이면 Vercel 쪽 `지금 tick 실행`·`실행` 버튼은 동작하지 않습니다 (수집은 GitHub Actions 가 하므로 정상).
+수집 현황(`/`)·데이터 품질(`/quality`) 화면은 조회 전용입니다 (실행 버튼 없음, 수집은 GitHub Actions).
 
 ## 1. 동작 방식 (꼭 읽어 주세요)
 

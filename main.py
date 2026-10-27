@@ -24,30 +24,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from kic_data import db, jobs, quality, status
 
 KST = ZoneInfo("Asia/Seoul")
 app = FastAPI(title="KIC 데이터 수집", docs_url=None, redoc_url=None)
-
-# 대시보드에 '설정됨/없음' 으로만 보여 줄 환경변수 (값은 절대 출력하지 않음)
-ENV_KEYS = [
-    ("DATABASE_URL", "Neon DB 연결 문자열", True),
-    ("CRON_SECRET", "자동 실행 호출 비밀값", True),
-    ("FSC_API_KEY", "공공데이터포털 (국내 시세·ETF)", True),
-    ("DART_API_KEY", "OpenDART (재무·공시)", True),
-    ("SEC_USER_AGENT", "SEC EDGAR ('이름 이메일')", True),
-    ("NAVER_CLIENT_ID", "네이버 검색 API ID", True),
-    ("NAVER_CLIENT_SECRET", "네이버 검색 API Secret", True),
-    ("NCP_APIHUB_KEY_ID", "NAVER API HUB 검색 트렌드 ID", False),
-    ("NCP_APIHUB_KEY", "NAVER API HUB 검색 트렌드 Key", False),
-    ("ECOS_API_KEY", "한국은행 ECOS", True),
-    ("FRED_API_KEY", "미국 FRED", True),
-    ("FINNHUB_API_KEY", "Finnhub 해외 영문 뉴스 (선택)", False),
-    ("DASHBOARD_PASSWORD", "대시보드 비밀번호 (선택)", False),
-]
-
 
 # ---------------------------------------------------------------- 인증
 
@@ -192,7 +174,14 @@ def features_json(request: Request):
 
 # ---------------------------------------------------------------- 데이터 품질 (sql/017, kic_data/quality.py)
 
-QUALITY_PAGE = Path(__file__).resolve().parent / "web" / "quality_dashboard.html"
+WEB_DIR = Path(__file__).resolve().parent / "web"
+QUALITY_PAGE = WEB_DIR / "quality_dashboard.html"
+
+
+@app.get("/static/kic.css", include_in_schema=False)
+def shared_css():
+    return Response((WEB_DIR / "kic.css").read_text(encoding="utf-8"), media_type="text/css",
+                    headers={"Cache-Control": "public, max-age=300"})
 
 
 def _connect_readonly():
@@ -216,7 +205,8 @@ def _quality_db(fn):
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 def quality_page(request: Request):
     _require_viewer(request)
-    return HTMLResponse(QUALITY_PAGE.read_text(encoding="utf-8"))
+    page = QUALITY_PAGE.read_text(encoding="utf-8")
+    return HTMLResponse(page.replace("<!--NAV-->", NAV.replace("{{JOBS_ACTIVE}}", "").replace("{{QUALITY_ACTIVE}}", "active")))
 
 
 @app.get("/api/quality/overview")
@@ -275,20 +265,17 @@ def _e(v) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
+    """수집 현황 (조회 전용). 수집은 GitHub Actions 가 하므로 실행 버튼은 두지 않습니다."""
     _require_viewer(request)
-    env_rows = "".join(
-        f"<tr><td><code>{k}</code></td><td>{_e(desc)}</td>"
-        f"<td><span class='pill {'ok' if os.environ.get(k) else ('failed' if req else 'muted')}'>"
-        f"{'설정됨' if os.environ.get(k) else ('없음' if req else '선택')}</span></td></tr>"
-        for k, desc, req in ENV_KEYS)
     job_html = runs_html = summary_html = ""
     error = None
     if os.environ.get("DATABASE_URL"):
         try:
             with db.connect() as conn:
-                jobs.ensure_schema(conn)
+                conn.read_only = True
                 state = jobs.DbState(conn)
-                ov = jobs.overview(state)
+                # API 키는 Vercel 이 아니라 GitHub Actions Secrets 에 있으므로 '키 없음' 판단은 실제 실행 기록(건너뜀)에 맡김
+                ov = jobs.overview(state, getenv=lambda k: "set")
                 runs = state.recent_runs(40)
                 st = status.collect(conn)
             job_html = _jobs_table(ov)
@@ -299,9 +286,10 @@ def dashboard(request: Request):
     else:
         error = "DATABASE_URL 이 설정되지 않았습니다. Vercel 프로젝트의 Environment Variables 에 넣고 다시 배포하세요."
     now = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
-    body = PAGE.replace("{{NOW}}", now).replace("{{ENV}}", env_rows).replace("{{JOBS}}", job_html) \
-        .replace("{{RUNS}}", runs_html).replace("{{SUMMARY}}", summary_html) \
-        .replace("{{ERROR}}", f"<div class='error'>{_e(error)}</div>" if error else "")
+    body = PAGE.replace("{{NOW}}", now).replace("{{NAV}}", NAV.replace("{{JOBS_ACTIVE}}", "active")
+                                                  .replace("{{QUALITY_ACTIVE}}", "")) \
+        .replace("{{JOBS}}", job_html).replace("{{RUNS}}", runs_html).replace("{{SUMMARY}}", summary_html) \
+        .replace("{{ERROR}}", f"<div class='errbox'>{_e(error)}</div>" if error else "")
     return HTMLResponse(body)
 
 
@@ -310,7 +298,7 @@ def _jobs_table(ov: list[dict]) -> str:
     for j in ov:
         if j["group"] != group:
             group = j["group"]
-            rows.append(f"<tr class='group'><td colspan='7'>{_e(group)}</td></tr>")
+            rows.append(f"<tr class='group'><td colspan='6'>{_e(group)}</td></tr>")
         if j["running"]:
             pill = "<span class='pill partial'>실행 중</span>"
         elif j["missing"]:
@@ -324,7 +312,7 @@ def _jobs_table(ov: list[dict]) -> str:
         elif j["status"] == "failed" and not j["due"]:
             nxt = "30분 뒤 재시도"
         elif j["due"]:
-            nxt = "다음 tick"
+            nxt = "다음 수집"
         elif j["next"]:
             nxt = _fmt(j["next"])
         else:
@@ -335,10 +323,7 @@ def _jobs_table(ov: list[dict]) -> str:
             f"<tr><td><b>{_e(j['label'])}</b><div class='sub'><code>{_e(j['name'])}</code> · {_e(j['every'])}</div></td>"
             f"<td>{pill}</td><td>{_fmt(j['last_finished'])}</td><td>{nxt}</td>"
             f"<td class='num'>{secs}</td>"
-            f"<td class='detail'>{_e(detail)}</td>"
-            f"<td class='act'><button onclick=\"runJob('{_e(j['name'])}')\">실행</button>"
-            + (f"<button class='ghost' onclick=\"resetJob('{_e(j['name'])}')\">다시</button>" if j["every"] == "1회" else "")
-            + "</td></tr>")
+            f"<td class='detail'>{_e(detail)}</td></tr>")
     return "".join(rows)
 
 
@@ -359,48 +344,30 @@ def _summary_block(st: dict) -> str:
     return "<pre class='json'>" + _e(json.dumps(_jsonable(st), ensure_ascii=False, indent=1)[:30000]) + "</pre>"
 
 
+# 두 화면(수집 현황 / 데이터 품질) 공통 상단 전환 버튼
+NAV = """<nav class="switch" aria-label="화면 전환">
+<a class="{{JOBS_ACTIVE}}" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m6 10V5m6 14v-7m4 7H2"/></svg>수집 현황</a>
+<a class="{{QUALITY_ACTIVE}}" href="/quality"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>데이터 품질</a>
+</nav>"""
+
 PAGE = """<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KIC 데이터 수집</title>
-<style>
-:root{--btnink:#fff;--bg:#f7f7f5;--card:#fff;--ink:#1d1d1b;--sub:#6b6b66;--line:#e4e3de;--accent:#2f5bd3;
---ok:#1f7a3f;--okb:#e5f4e4;--warn:#9a5b00;--warnb:#f9eeda;--bad:#b42318;--badb:#fbebeb;--mut:#6b6b66;--mutb:#f0efec;--run:#2f5bd3;--runb:#e7f1fb}
-@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecebe6;--sub:#a3a29c;--line:#33332f;--accent:#8aa8ff;
---btnink:#141413;--ok:#7fd49a;--okb:#1d3324;--warn:#f0c070;--warnb:#3a2e17;--bad:#ff9a8f;--badb:#3d1f1c;--mut:#a3a29c;--mutb:#2a2a27;--run:#9db8ff;--runb:#1d2a44}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
-main{max-width:1180px;margin:0 auto;padding:24px 16px 64px}h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px}
-.sub{color:var(--sub);font-size:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:4px 0;overflow-x:auto}
-table{border-collapse:collapse;width:100%;min-width:820px}td,th{padding:8px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-tr:last-child td{border-bottom:0}tr.group td{background:var(--mutb);font-weight:600;font-size:12px;color:var(--sub)}
-.num{text-align:right;white-space:nowrap}.detail{color:var(--sub);font-size:12px;max-width:340px}.act{white-space:nowrap}
-.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;white-space:nowrap}
-.pill.ok{color:var(--ok);background:var(--okb)}.pill.warn{color:var(--warn);background:var(--warnb)}.pill.failed{color:var(--bad);background:var(--badb)}
-.pill.skipped,.pill.muted{color:var(--mut);background:var(--mutb)}.pill.partial{color:var(--run);background:var(--runb)}
-button{font:inherit;font-size:12px;border:1px solid var(--accent);background:var(--accent);color:var(--btnink);border-radius:6px;padding:3px 10px;cursor:pointer;margin-right:4px}
-button.ghost{background:transparent;color:var(--accent)}button.big{font-size:14px;padding:6px 14px}
-details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:6px 0;padding:6px 12px}summary{cursor:pointer}
-pre{white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:360px;overflow:auto;margin:8px 0 0}
-.error{background:var(--badb);color:var(--bad);padding:10px 14px;border-radius:8px;margin:14px 0}
-.top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}#msg{margin-top:10px;font-size:13px}
-</style></head><body><main>
-<div class="top"><div><h1>KIC 데이터 수집</h1><div class="sub">기준 {{NOW}} KST · 1분마다 새로고침 · tick 을 10~15분마다 호출하면 작업이 주기대로 돌아갑니다</div></div>
-<div><a href="/quality" style="margin-right:10px;color:var(--accent)">데이터 품질 →</a><button class="big" onclick="tick()">지금 tick 실행</button></div></div>
-<div id="msg"></div>
+<title>KIC 수집 현황</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="stylesheet" href="/static/kic.css">
+</head><body>
+<header><div class="bar">
+<div class="brand"><div class="logo">KIC</div><h1>수집 현황<small>기준 {{NOW}} KST · 1분마다 새로고침</small></h1></div>
+{{NAV}}
+</div></header>
+<main>
+<div class="info"><span>수집은 GitHub Actions 가 매시 7분에 자동 실행합니다 (이 화면은 조회 전용)</span></div>
 {{ERROR}}
-<h2>작업</h2><div class="card"><table><tr><th>작업</th><th>상태</th><th>마지막 실행</th><th>다음 예정</th><th class="num">소요</th><th>내용</th><th></th></tr>{{JOBS}}</table></div>
-<h2>최근 실행 기록</h2>{{RUNS}}
-<h2>환경변수</h2><div class="card"><table>{{ENV}}</table></div>
-<h2>수집 현황 (status)</h2><details><summary>펼치기</summary>{{SUMMARY}}</details>
+<h3 style="margin-top:0">작업</h3>
+<div class="table-wrap"><table class="wide"><thead><tr><th>작업</th><th>상태</th><th>마지막 실행</th><th>다음 예정</th><th class="num">소요</th><th>내용</th></tr></thead><tbody>{{JOBS}}</tbody></table></div>
+<h3>최근 실행 기록</h3>{{RUNS}}
+<h3>수집 현황 (status 원본)</h3><details><summary>펼치기</summary>{{SUMMARY}}</details>
 </main>
 <script>
-function secret(){let s=null;try{s=sessionStorage.getItem('kic_secret')}catch(e){}
- if(!s){s=prompt('CRON_SECRET 값을 입력하세요 (이 탭에서만 기억)');if(s){try{sessionStorage.setItem('kic_secret',s)}catch(e){}}}return s}
-async function call(url,label){const s=secret();if(!s)return;const m=document.getElementById('msg');m.textContent=label+' 실행 중... (최대 5분)';
- try{const r=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+s}});const t=await r.text();
-  if(r.status===401){try{sessionStorage.removeItem('kic_secret')}catch(e){}}
-  m.textContent=label+' → HTTP '+r.status+' '+t.slice(0,300);setTimeout(()=>location.reload(),1500)}catch(e){m.textContent=label+' 오류: '+e}}
-function runJob(n){call('/api/jobs/'+n+'/run',n)}
-function resetJob(n){call('/api/jobs/'+n+'/reset',n+' 초기화')}
-function tick(){call('/api/cron/tick','tick')}
 setTimeout(()=>{if(!document.querySelector('details[open]'))location.reload()},60000);
 </script></body></html>"""
