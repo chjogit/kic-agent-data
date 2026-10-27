@@ -321,6 +321,7 @@ def test_new_macro_series_backfill_start(monkeypatch):
     ids = [r[0] for r in macro.ECOS_SERIES] + [r[0] for r in macro.FRED_SERIES]
     assert len(ids) == len(set(ids))
     assert {"ECOS_CPI", "ECOS_KTB3Y", "ECOS_KTB10Y", "DEXJPUS", "DEXCHUS", "DCOILWTICO"} <= set(ids)
+    assert {"PCOPPUSDM", "PIORECRUSDM", "PNGASJPUSDM", "QKRN628BIS"} <= set(ids)
     start = date.today() - timedelta(days=365)
     monkeypatch.setattr(db, "has_macro", lambda conn, sid: sid == "OLD")
     assert cli._macro_start(None, "OLD", start) == start
