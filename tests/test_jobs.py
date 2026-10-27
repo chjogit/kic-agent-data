@@ -437,3 +437,37 @@ def test_dart_multi_skips_covered_and_stops_on_budget(monkeypatch):
     args = SimpleNamespace(from_year=2025, reports="11013", max_seconds=10)
     assert cli.cmd_dart_multi(args) == jobs.MORE
     assert len(calls) == 1
+
+
+def test_every_job_has_one_lane_and_each_api_stays_in_one_lane():
+    from kic_data import quality
+
+    lane_of_api = {}
+    for j in jobs.JOBS:
+        lane = jobs.lane_of(j)
+        assert lane in jobs.LANES, (j.name, lane)
+        api = quality.API_OF_JOB.get(j.name)
+        if api and lane != jobs.PREP_LANE:
+            assert lane_of_api.setdefault(api, lane) == lane, api  # 같은 API 를 두 줄이 동시에 부르지 않음
+    assert jobs.lane_of(jobs.JOB_BY_NAME["apply-schema"]) == jobs.PREP_LANE
+    assert jobs.lane_of(jobs.JOB_BY_NAME["build-quarterly"]) == jobs.CALC_LANE
+    assert jobs.lane_of(jobs.JOB_BY_NAME["youtube"]) == "global"
+    assert jobs.lane_of(jobs.JOB_BY_NAME["backfill-dart-quarterly"]) == "dart"
+
+
+def test_tick_lane_runs_only_that_lane(monkeypatch):
+    ran = []
+    fake = [jobs.JOB_BY_NAME[n] for n in ("apply-schema", "disclosures", "kr-prices", "youtube", "build-features")]
+    monkeypatch.setattr(jobs, "JOBS", fake)
+    cmds = SimpleNamespace(**{j.command: (lambda name: lambda ns: ran.append(name))(j.name) for j in fake})
+    jobs.tick(MemState(), budget=1000, hard_limit=1300, commands=cmds, getenv=env_all, lane="global",
+              universe_for=lambda j: None)
+    assert ran == ["youtube"]
+
+
+def test_workflow_matrix_matches_collect_lanes():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / ".github/workflows/collect.yml").read_text(encoding="utf-8")
+    assert f"lane: [{', '.join(jobs.COLLECT_LANES)}]" in text
+    assert f"--lane {jobs.PREP_LANE}" in text and f"--lane {jobs.CALC_LANE}" in text

@@ -16,6 +16,7 @@ Neon(Postgres + pgvector)에 국내·해외 주식 데이터를 모으는 VS Cod
 
 GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업만 ① 준비 → ② 과거분 → ③ 정기 수집 → ④ 재무 → ⑤ 파생 계산 순서로
 외부 API 를 호출해 Neon 에 적재합니다. 작업 상태는 `ops` 스키마에 남고, 20분 예산을 넘긴 작업은 다음 실행이 이어받습니다.
+수집은 원천 API 별 줄(dart · public · naver · naver_etc · global)로 나눠 동시에 돌고, 줄마다 20분 예산이 따로 적용됩니다.
 
 ### DB 구조
 
