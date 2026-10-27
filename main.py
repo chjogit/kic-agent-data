@@ -5,6 +5,9 @@
   POST /api/jobs/{name}/run    작업 하나 바로 실행 (CRON_SECRET 필요)
   POST /api/jobs/{name}/reset  1회 작업을 처음부터 다시 하도록 초기화 (CRON_SECRET 필요)
   GET  /api/jobs · /api/runs · /api/status · /api/features   JSON 조회
+  GET  /quality                데이터 품질 대시보드 (web/quality_dashboard.html)
+  GET  /api/quality/overview · /api/quality/api/{name} · /api/quality/schema/{name} · /api/quality/anomalies
+                               품질 조회 JSON (읽기 전용 트랜잭션)
 
 배포 방법은 docs/DEPLOY_VERCEL.md 를 보세요. 로컬 실행: uvicorn main:app --reload
 """
@@ -17,12 +20,13 @@ import json
 import os
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from kic_data import db, jobs, status
+from kic_data import db, jobs, quality, status
 
 KST = ZoneInfo("Asia/Seoul")
 app = FastAPI(title="KIC 데이터 수집", docs_url=None, redoc_url=None)
@@ -186,6 +190,67 @@ def features_json(request: Request):
     return _ok({f"{m}:{t}": v for (m, t), v in data.items()})
 
 
+# ---------------------------------------------------------------- 데이터 품질 (sql/017, kic_data/quality.py)
+
+QUALITY_PAGE = Path(__file__).resolve().parent / "web" / "quality_dashboard.html"
+
+
+def _connect_readonly():
+    """조회만 하므로 읽기 전용 트랜잭션으로 엽니다 (DATABASE_URL 이 읽기 전용 계정이 아니어도 쓰기 불가)."""
+    conn = _connect()
+    conn.read_only = True
+    return conn
+
+
+def _quality_db(fn):
+    try:
+        with _connect_readonly() as conn:
+            return fn(conn)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001  quality 스키마가 아직 없을 때 등
+        raise HTTPException(503, f"{type(exc).__name__}: {str(exc)[:200]}") from exc
+
+
+@app.get("/quality", response_class=HTMLResponse)
+@app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+def quality_page(request: Request):
+    _require_viewer(request)
+    return HTMLResponse(QUALITY_PAGE.read_text(encoding="utf-8"))
+
+
+@app.get("/api/quality/overview")
+def quality_overview(request: Request):
+    _require_viewer(request)
+    return _ok(_quality_db(quality.overview))
+
+
+@app.get("/api/quality/api/{name}")
+def quality_api(name: str, request: Request):
+    _require_viewer(request)
+    data = _quality_db(lambda conn: quality.api_detail(conn, name))
+    if data is None:
+        raise HTTPException(404, "없는 API 입니다.")
+    return _ok(data)
+
+
+@app.get("/api/quality/schema/{name}")
+def quality_schema(name: str, request: Request):
+    _require_viewer(request)
+    data = _quality_db(lambda conn: quality.schema_tables(conn, name))
+    if data is None:
+        raise HTTPException(404, "조회할 수 없는 스키마입니다.")
+    return _ok(data)
+
+
+@app.get("/api/quality/anomalies")
+def quality_anomalies(request: Request, limit: int = 50, severity: str | None = None):
+    _require_viewer(request)
+    if severity not in (None, "info", "warn", "error"):
+        raise HTTPException(400, "severity 는 info / warn / error 중 하나입니다.")
+    return _ok(_quality_db(lambda conn: quality.anomalies(conn, max(1, min(limit, 500)), severity)))
+
+
 # ---------------------------------------------------------------- 대시보드
 
 STATUS_TEXT = {"ok": "정상", "warn": "일부 실패", "failed": "실패", "skipped": "건너뜀", "partial": "진행 중"}
@@ -312,7 +377,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:360px;ov
 .top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}#msg{margin-top:10px;font-size:13px}
 </style></head><body><main>
 <div class="top"><div><h1>KIC 데이터 수집</h1><div class="sub">기준 {{NOW}} KST · 1분마다 새로고침 · tick 을 10~15분마다 호출하면 작업이 주기대로 돌아갑니다</div></div>
-<div><button class="big" onclick="tick()">지금 tick 실행</button></div></div>
+<div><a href="/quality" style="margin-right:10px;color:var(--accent)">데이터 품질 →</a><button class="big" onclick="tick()">지금 tick 실행</button></div></div>
 <div id="msg"></div>
 {{ERROR}}
 <h2>작업</h2><div class="card"><table><tr><th>작업</th><th>상태</th><th>마지막 실행</th><th>다음 예정</th><th class="num">소요</th><th>내용</th><th></th></tr>{{JOBS}}</table></div>

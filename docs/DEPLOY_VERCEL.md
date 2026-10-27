@@ -7,6 +7,30 @@
 이 프로젝트는 그대로 Vercel 에 올릴 수 있는 웹 프로그램(FastAPI, `main.py`)을 포함합니다.
 대시보드에서 작업별 상태·실행 기록·수집 현황을 보고, 수집은 시간표에 따라 자동으로 돌아갑니다.
 
+## 0. 데이터 품질 대시보드 (`/quality`)
+
+- 주소: `https://<배포주소>/quality` (기존 수집 대시보드 `/` 오른쪽 위에도 링크).
+- 탭: **개요**(API별 신호등·24시간 이상 건수) · **API 상태**(최근 성공·오류·연속 실패·한도 초과 의심) ·
+  **스키마**(core·ops·quality·rag 테이블별 건수, 추정치) · **이상 이벤트**(최근 50건).
+- 데이터: `sql/017_quality.sql` 의 `quality` 스키마. GitHub Actions 수집이 작업을 끝낼 때마다
+  `kic_data/quality.py` 가 작업 → 원천 API(dart·sec·fsc·data.go.kr·yfinance·ecos·fred·naver·naver_datalab·naver_finance·finnhub·youtube)
+  상태를 갱신하고, 실패는 `error`, 일부 실패는 `warn` 이벤트로 남깁니다. 스키마는 매 실행의 `apply-schema` 작업이 자동 적용합니다.
+- 신호등: 연속 실패 2회 이상 = 오류, 1회·한도 초과 의심·2일 넘게 성공 없음 = 주의, 기록 없음 = 회색.
+- JSON: `/api/quality/overview`, `/api/quality/api/{이름}`, `/api/quality/schema/{core|ops|quality|rag|raw}`, `/api/quality/anomalies?limit=50&severity=error`.
+  모두 읽기 전용 트랜잭션으로 조회합니다.
+
+### 대시보드용 읽기 전용 계정 (권장)
+
+Vercel 에는 쓰기 권한이 없는 계정의 연결 문자열을 넣는 것을 권장합니다.
+1. Neon 콘솔 → **SQL Editor** 에서 한 줄 실행 (비밀번호는 직접 정한 긴 문자열, 영문·숫자 20자 이상):
+   `CREATE ROLE kic_readonly WITH LOGIN PASSWORD '여기에_비밀번호';`
+   (콘솔의 Roles 화면에서 만든 계정은 neon_superuser 에 속해 쓰기 권한까지 생기므로 SQL 로 만듭니다.)
+2. 다음 수집 실행(매시 7분)의 `apply-schema` 가 `kic_readonly` 에 core·ops·quality 읽기 권한을 자동으로 줍니다.
+3. Neon **Connect** 에서 복사한 연결 문자열의 `사용자:비밀번호` 부분을 `kic_readonly:여기에_비밀번호` 로 바꿔
+   Vercel 환경변수 `DATABASE_URL` 에 넣고 Redeploy.
+
+읽기 전용 계정이면 Vercel 쪽 `지금 tick 실행`·`실행` 버튼은 동작하지 않습니다 (수집은 GitHub Actions 가 하므로 정상).
+
 ## 1. 동작 방식 (꼭 읽어 주세요)
 
 - Vercel 함수는 한 번 호출에 **최대 300초**만 실행됩니다. 34종목 전체 수집을 한 번에 끝낼 수 없어서,
@@ -14,9 +38,9 @@
   종목이 많은 작업은 몇 종목씩 나눠서 다음 tick 에 이어 갑니다.
 - **Vercel 무료(Hobby) 요금제는 크론이 하루 1회로 제한**됩니다. 매시간 크론(`0 * * * *`)을 넣으면 배포가 실패합니다.
   그래서 기본 설정은 아래와 같습니다.
-  - `vercel.json`: 하루 1회(한국 시간 06시) tick (Hobby 에서도 배포됨, 백업용)
+  - `vercel.json`: 크론 없음 (수집은 GitHub Actions `collect.yml` 이 맡고, Vercel 은 대시보드만 보여 줌)
   - `docs/vercel-tick.yml.example` 를 `.github/workflows/` 로 옮기면 **GitHub Actions 가 15분마다 tick 호출** → 모든 작업이 매시간 돌아감
-- Vercel **Pro** 요금제라면 GitHub Actions 없이 `vercel.json` 의 크론을 `"*/15 * * * *"` 로 바꾸기만 하면 됩니다.
+- Vercel **Pro** 요금제라면 GitHub Actions 없이 `vercel.json` 에 `"crons": [{"path": "/api/cron/tick", "schedule": "*/15 * * * *"}]` 를 넣으면 됩니다.
 - GitHub 를 쓰지 않으려면 cron-job.org 같은 무료 외부 크론에서 15분마다
   `https://<배포주소>/api/cron/tick?key=<CRON_SECRET>` 을 부르게 해도 같습니다.
 
