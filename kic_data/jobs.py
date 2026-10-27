@@ -159,6 +159,10 @@ JOBS: list[Job] = [
 # 새 종목이 들어오면 다시 해야 하는 과거분 (종목마다 받는 것)
 PER_TICKER_BACKFILLS = ("backfill-kr-prices", "backfill-disclosures", "backfill-news", "backfill-community",
                         "backfill-trends", "backfill-investor-flows", "backfill-dart-annual", "backfill-dart-quarterly")
+# 종목 마스터가 바뀌면 과거분보다 먼저 다시 돌려야 하는 준비 작업 (DART 고유번호·업종이 있어야 재무·공시·Peer 를 만듦)
+PREP_JOBS = ("sync-dart-codes", "company-info")
+# DART 고유번호가 새로 연결된 종목이 생기면 다시 받아야 하는 작업
+DART_FOLLOWUPS = ("company-info", "backfill-disclosures", "backfill-dart-annual", "backfill-dart-quarterly")
 JOB_BY_NAME = {j.name: j for j in JOBS}
 
 

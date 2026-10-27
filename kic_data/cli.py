@@ -141,15 +141,24 @@ def cmd_seed(args) -> int:
 
 def cmd_sync_dart(args) -> int:
     s = make_session()
+    from . import jobs
+
     codes = {c["stock_code"]: c for c in dart.fetch_corp_codes(s)}
+    newly = []
     with db.connect() as conn:
-        for _, ticker, name, _, _ in db.list_companies(conn, "KR"):
+        for _, ticker, name, corp_code, _ in db.list_companies(conn, "KR"):
             c = codes.get(ticker)
             if c:
                 db.get_or_create_company(conn, "KR", ticker, name, corp_code=c["corp_code"])
                 _ok(ticker, c["corp_code"])
+                if not corp_code:
+                    newly.append(ticker)
             else:
                 print(f"[WARN] {ticker} DART 상장사 목록에 없음")
+        if newly:
+            # 고유번호가 없던 종목은 업종·공시·재무 과거분을 못 받았으므로 다시 받게 함
+            jobs.reset_backfills(conn, jobs.DART_FOLLOWUPS)
+            print(f"[OK]   새로 연결 {len(newly)}종목 → 업종·공시·재무 과거분 다시 받기")
     return 0
 
 
@@ -774,7 +783,8 @@ def cmd_sync_kospi200(args) -> int:
         db.set_index_members(conn, "KOSPI200", ids, date.today())
         added = [t for t, _ in members if t not in before]
         if added:
-            jobs.reset_backfills(conn)
+            # 준비 작업(DART 고유번호·업종)이 오늘 이미 끝났어도 새 종목 기준으로 다시 돌게 함
+            jobs.reset_backfills(conn, jobs.PREP_JOBS + jobs.PER_TICKER_BACKFILLS)
     _ok("KOSPI 200", f"{len(members)}종목 표시, 새 종목 {len(added)}개" + (" → 종목별 과거분 다시 받기" if added else ""))
     return 0
 
