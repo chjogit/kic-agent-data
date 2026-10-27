@@ -18,4 +18,4 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - run: python -m kic_data.cli probe-dart-doc --extract --show-misses --tickers ALL
+      - run: python -m kic_data.cli probe-dart-doc --extract --show-misses --tickers 000880,000210,004000,006280,000720,003490,035420,051910,066570,096770,017670,105560

@@ -45,6 +45,36 @@ def test_sensitivity_layout_xbrl_rows_are_up_down():  # 표준 주석(XBRL) 형�
     assert m[("fx_sens", "USD")].value == 1_210_371e6 and m[("fx_sens", "JPY")].value == -105_656e6
 
 
+def test_sensitivity_layout_period_then_currency():   # 한화 형태: '당 기 | USD | …', 전기 행은 무시
+    x = _t([["구 분", "구 분", "10% 상승시", "10% 상승시", "10% 하락시", "10% 하락시"],
+            ["구 분", "구 분", "손 익", "순자산", "손 익", "순자산"],
+            ["당 기", "USD", "(92,568)", "(92,568)", "92,568", "92,568"],
+            ["당 기", "EUR", "2,094", "2,094", "(2,094)", "(2,094)"],
+            ["전 기", "USD", "(50,000)", "(50,000)", "50,000", "50,000"]],
+           before="보고기간말 현재 각 외화에 대한 원화 환율 10% 변동시 손익 및 순자산에 미치는 영향",
+           unit_table="(단위: 백만원)")
+    m = {(k.metric, k.currency): k for k in ep.extract({"a.xml": x})["metrics"]}
+    assert m[("fx_sens", "USD")].value == -92_568e6 and m[("fx_sens", "EUR")].value == 2_094e6
+    assert m[("fx_sens", "USD")].change_pct == 10
+
+
+def test_sensitivity_layout_single_total_row():       # DL·롯데정밀화학 형태: 통화 구분 없는 합계 한 행
+    x = _t([["구분", "당기", "당기", "전기", "전기"],
+            ["구분", "10% 환율 인상시", "10% 환율 인하시", "10% 환율 인상시", "10% 환율 인하시"],
+            ["세전순이익", "(6,410)", "6,410", "46,423", "(46,423)"]],
+           before="각 외화에 대한 기능통화의 환율이 10% 변동시 연결회사의 세전순이익에 미치는 영향",
+           unit_table="(단위: 백만원)")
+    (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
+    assert s.currency == "ALL" and s.value == -6_410e6 and s.basis == "세전이익" and s.change_pct == 10
+
+
+def test_sensitivity_down_column_first():
+    x = _t([["구분", "10% 하락시", "10% 상승시"], ["USD", "500", "(500)"]],
+           before="환율이 10% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
+    assert s.value == -500e6
+
+
 def test_fx_position_uses_krw_columns():
     x = ('<P>화폐성 외화자산 및 외화부채의 내역</P><TABLE><TR><TD>(원화단위: 백만원, 외화단위: 외화 백만단위)</TD></TR></TABLE>'
          '<TABLE><TR><TD ROWSPAN="2">구 분</TD><TD COLSPAN="2">자 산</TD><TD COLSPAN="2">부 채</TD></TR>'

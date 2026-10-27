@@ -100,27 +100,61 @@ def _evidence(t: Table) -> str:
 
 # ---------------------------------------------------------------- 환율 민감도
 
+PRIOR_RE = re.compile(r"^전\s*기|^전기말|^전\s*년")
+TOTAL_ROW_RE = re.compile(r"법인세\s*(비용)?\s*차감\s*전|세전\s*(순)?\s*(이익|손익)|당기\s*(순)?\s*(이익|손익)")
+UP_RE = re.compile(r"상승|인상|절하|증가")
+
+
+def _up_col(t: Table) -> int | None:
+    """머리행에서 '상승(인상)' 열 중 첫째 열. 당기·상승이 앞에 오는 표가 대부분이지만 '하락'이 먼저인 표도 있어 확인."""
+    for r in t.rows[:3]:
+        for i, c in enumerate(r):
+            cc = c.replace(" ", "")
+            if i > 0 and UP_RE.search(cc) and "하락" not in cc and "인하" not in cc:
+                return i
+    return None
+
+
+def _ccy_cell(r: list[str]) -> tuple[int, str] | None:
+    """행의 앞 두 칸에서 통화를 찾습니다 ('당 기 | USD | …' 처럼 기간이 앞에 오는 표)."""
+    for i, c in enumerate(r[:2]):
+        code = ccy_of(c)
+        if code:
+            return i, code
+    return None
+
+
 def _is_sensitivity(t: Table) -> bool:
     b = _blob(t, 6)
-    return "환율" in b and bool(re.search(r"민감|변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시", b)) \
-        and (_pct(b) is not None) and any(ccy_of(c) for r in t.rows for c in r[:1] + t.rows[0])
+    if not ("환율" in b and re.search(r"민감|변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|인상\s*시|인하\s*시", b)
+            and _pct(b) is not None):
+        return False
+    has_ccy = any(ccy_of(c) for r in t.rows for c in r[:2] + t.rows[0])
+    has_total = any(r and TOTAL_ROW_RE.search(r[0].replace(" ", "")) for r in t.rows)
+    return has_ccy or has_total
 
 
 def sensitivity(t: Table) -> list[Metric]:
-    """민감도 표에서 통화별 '상승 시' 손익 영향(당기)을 원 단위로."""
+    """민감도 표에서 통화별 '상승 시' 손익 영향(당기)을 원 단위로. 통화 구분이 없으면 currency='ALL'."""
     f = unit_factor(t.unit)
     if f is None:
         return []
     b = _blob(t, 6)
     pct, basis = _pct(b), _basis(b)
     out: dict[str, float] = {}
-    # 배치 A: 행 = 통화, 열 = 상승/하락 (당기 먼저)
+    up = _up_col(t)
+    # 배치 A: 행 = 통화(앞 두 칸 중 하나), 열 = 상승/하락 (당기 먼저). 전기 행은 건너뜀
     for r in t.rows:
-        code = ccy_of(r[0]) if r else None
-        if not code or code in out:
+        hit = _ccy_cell(r) if r else None
+        if not hit or PRIOR_RE.search(r[0].replace(" ", "")):
             continue
-        vals = [num(c) for c in r[1:]]
-        vals = [v for v in vals if v is not None]
+        i, code = hit
+        if code in out:
+            continue
+        if up is not None and up > i and up < len(r) and num(r[up]) is not None:
+            out[code] = num(r[up])
+            continue
+        vals = [v for v in (num(c) for c in r[i + 1:]) if v is not None]
         if vals:
             out[code] = vals[0]
     # 배치 B: 머리행 = 통화, 행 = '상승 시 증가/감소'
@@ -140,6 +174,20 @@ def sensitivity(t: Table) -> list[Metric]:
                         v = num(r[i])
                         if v is not None:
                             out[code] = sign * abs(v) if "감소" in label or "증가" in label else v
+    # 배치 C: 통화 구분 없이 손익 합계 한 행 ('세전순이익 | (6,410) | 6,410 | …')
+    if not out:
+        for r in t.rows:
+            label = r[0].replace(" ", "") if r else ""
+            if not TOTAL_ROW_RE.search(label) or "하락" in label or "감소" in label:
+                continue
+            v = num(r[up]) if up is not None and up < len(r) else None
+            if v is None:
+                vals = [x for x in (num(c) for c in r[1:]) if x is not None]
+                v = vals[0] if vals else None
+            if v is not None:
+                out["ALL"] = v
+                basis = _basis(label) or basis
+                break
     ev = _evidence(t)
     return [Metric("fx_sens", code, v * f, pct, basis, t.unit, ev, t.index, t.file) for code, v in out.items()]
 
