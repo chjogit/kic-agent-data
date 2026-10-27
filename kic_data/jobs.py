@@ -131,7 +131,8 @@ JOBS: list[Job] = [
     Job("community", "블로그·카페 반응", "cmd_community", {"days": 2, "sources": "naver_blog,naver_cafe", "pages": 1},
         every=SIX_HOURS, needs=DB + NAVER, split=("KR", "US"), chunk=25),
     Job("trends", "검색 관심도", "cmd_trends", {"days": 14}, every=SIX_HOURS, needs=DB, needs_any=NEWS_KEYS),
-    Job("youtube", "유튜브 공개 영상·댓글(대형주)", "cmd_youtube", {"days": 7, "videos": 5, "comments": 100, "top_kr": 40},
+    Job("youtube", "유튜브 공개 영상·댓글(대형주)", "cmd_youtube", {"days": 7, "videos": 5, "comments": 100, "top_kr": 40,
+                                                                    "order": "viewCount"},
         every=DAY, needs=DB + ("YOUTUBE_API_KEY",)),
     # ↑ 검색 1회 100단위(하루 10,000)라 영상이 많은 국내 시총 상위 40종목 + 해외 종목만 매일 (약 5,700 + 댓글 수백)
     Job("investor-flows", "투자자별 순매수(외국인·기관·개인)", "cmd_investor_flows", {"days": 10}, every=DAY,
