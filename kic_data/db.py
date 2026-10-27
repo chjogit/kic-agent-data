@@ -114,6 +114,58 @@ def upsert_documents(conn, company_id: int, source: str, rows: list[dict], keep_
     return len(params)
 
 
+ANNUAL_RE = r"^(\[[^]]+\])?사업보고서 \((\d{4})\.\d{2}\)"
+
+
+def annual_reports(conn, company_id: int, limit: int = 3) -> list[tuple]:
+    """최근 사업보고서 접수번호 → [(rcept_no, fiscal_year, rcept_dt)] 최신순 (정정 포함, 해외 신고분 제외)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT rcept_no, substring(report_nm from %s)::int AS fy, rcept_dt FROM ("
+            "  SELECT rcept_no, regexp_replace(report_nm, '\\s+$', '') AS report_nm, rcept_dt FROM core.disclosure"
+            "  WHERE company_id = %s AND report_nm ~ %s) d "
+            "ORDER BY fy DESC, rcept_dt DESC, rcept_no DESC LIMIT %s",
+            [r"\((\d{4})\.\d{2}\)", company_id, ANNUAL_RE, limit])
+        return cur.fetchall()
+
+
+def report_parsed(conn, company_id: int, fiscal_year: int) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT rcept_no FROM ops.report_parse WHERE company_id = %s AND fiscal_year = %s",
+                    [company_id, fiscal_year])
+        r = cur.fetchone()
+        return r[0] if r else None
+
+
+def annual_revenue(conn, company_id: int, fiscal_year: int) -> float | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT revenue FROM core.v_fundamentals_annual WHERE company_id = %s AND fiscal_year = %s",
+                    [company_id, fiscal_year])
+        r = cur.fetchone()
+        return float(r[0]) if r and r[0] is not None else None
+
+
+def save_report_exposure(conn, company_id: int, fiscal_year: int, rcept_no: str, metrics: list, found: list[str],
+                         status: str) -> int:
+    """이 회사·연도의 이전 추출값을 지우고 새로 씁니다 (정정 보고서가 나오면 통째로 교체)."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM core.report_exposure WHERE company_id = %s AND fiscal_year = %s",
+                    [company_id, fiscal_year])
+        cur.executemany(
+            "INSERT INTO core.report_exposure (company_id, fiscal_year, rcept_no, metric, currency, value, change_pct, "
+            "basis, unit_raw, evidence, file, table_index) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (company_id, fiscal_year, metric, currency) DO NOTHING",
+            [[company_id, fiscal_year, rcept_no, m.metric, m.currency, m.value, m.change_pct, m.basis, m.unit_raw,
+              m.evidence, m.file, m.table_index] for m in metrics])
+        cur.execute(
+            "INSERT INTO ops.report_parse (company_id, fiscal_year, rcept_no, found, status) VALUES (%s,%s,%s,%s,%s) "
+            "ON CONFLICT (company_id, fiscal_year) DO UPDATE SET rcept_no = EXCLUDED.rcept_no, found = EXCLUDED.found, "
+            "status = EXCLUDED.status, parsed_at = now()",
+            [company_id, fiscal_year, rcept_no, found, status])
+    conn.commit()
+    return len(metrics)
+
+
 def docs_without_chunks(conn, source: str, limit: int | None = None) -> list[tuple]:
     """아직 청크가 없는 문서 → [(doc_id, title, summary)]"""
     sql = (

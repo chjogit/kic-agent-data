@@ -145,6 +145,9 @@ JOBS: list[Job] = [
     Job("mentions", "언급량 스냅샷", "cmd_pulse", {"tickers": None, "max_age": 0, "market_hours": False},
         every=SIX_HOURS, needs=DB + NAVER, split=("KR", "US"), chunk=25),
     # 재무: 국내는 다중회사 주요계정(100개사씩)이라 몇 번의 호출로 끝남
+    Job("report-exposure", "사업보고서 원문 노출(환율 민감도·수출 비중)", "cmd_report_exposure", {"force": False},
+        every=DAY, needs=DB + ("DART_API_KEY",), split=("KR",), chunk=8, group="재무"),
+    # ↑ 회사마다 원문 zip(약 10MB) 1개. 이미 읽은 접수번호는 건너뛰어 평소에는 거의 호출 없음
     Job("dart-annual", "국내 연간 재무(최근 2년)", "cmd_dart_multi", {"from_year": _years_ago(2), "reports": "11011"},
         every=DAY, needs=DB + ("DART_API_KEY",), group="재무"),
     Job("dart-quarterly", "국내 분기 재무(올해)", "cmd_dart_multi", {"from_year": _years_ago(0), "reports": Q_REPORTS},
