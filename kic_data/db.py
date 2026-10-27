@@ -23,13 +23,30 @@ def connect():
                            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
 
 
-def apply_schema(conn) -> list[str]:
-    """sql/*.sql 을 번호순으로 실행 (모두 IF NOT EXISTS 라 여러 번 실행해도 안전)."""
+def apply_schema(conn, lock_timeout: str | None = None, busy: list[str] | None = None) -> list[str]:
+    """sql/*.sql 을 번호순으로 실행 (모두 IF NOT EXISTS 라 여러 번 실행해도 안전).
+
+    ALTER TABLE ... ADD COLUMN IF NOT EXISTS 는 열이 이미 있어도 테이블 전체 잠금을 기다립니다. 다른 연결이
+    트랜잭션을 열어 둔 채 오래 쉬면(예: 원문을 받는 동안 SELECT 를 열어 둔 점검 실행) 무한정 기다리다
+    statement timeout 으로 끊기고, 기다리는 동안 그 테이블의 다른 조회까지 막힙니다.
+    lock_timeout 을 주면 잠금을 그만큼만 기다리고, 못 잡은 파일은 busy 에 넣고 건너뜁니다 (다음 실행에서 다시).
+    """
+    import psycopg
+
     applied = []
     for path in sorted(SQL_DIR.glob("*.sql")):
-        with conn.cursor() as cur:
-            cur.execute(path.read_text(encoding="utf-8"))
-        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                if lock_timeout:
+                    cur.execute(f"SET LOCAL lock_timeout = '{lock_timeout}'")
+                cur.execute(path.read_text(encoding="utf-8"))
+            conn.commit()
+        except psycopg.errors.LockNotAvailable:
+            conn.rollback()
+            if busy is None:
+                raise
+            busy.append(path.name)
+            continue
         applied.append(path.name)
     return applied
 
