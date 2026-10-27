@@ -76,8 +76,10 @@ def parse_comments(payload: dict, video_id: str) -> list[dict]:
     return rows
 
 
-def search_videos(session, query: str, since: date, max_results: int = 5) -> list[dict]:
-    params = {"part": "snippet", "q": query, "type": "video", "order": "date", "maxResults": max_results,
+def search_videos(session, query: str, since: date, max_results: int = 5, order: str = "viewCount") -> list[dict]:
+    """기간 안의 영상을 찾습니다. 기본은 조회수 순: 최신순(date)은 막 올라온 영상이라 댓글이 거의 없음
+    (10/26 첫 실행: 영상 123개 중 댓글 있는 영상 29개, 평균 댓글 1개)."""
+    params = {"part": "snippet", "q": query, "type": "video", "order": order, "maxResults": max_results,
               "publishedAfter": f"{since.isoformat()}T00:00:00Z", "regionCode": "KR", "relevanceLanguage": "ko",
               "key": env("YOUTUBE_API_KEY", required=True)}
     return parse_search(get_json(session, "youtube", f"{BASE}/search", params=params, limiter=_limiter))

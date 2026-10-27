@@ -30,6 +30,22 @@ class YoutubeParseTest(unittest.TestCase):
                                  "published_at": date(2026, 10, 26), "summary": "오늘 반등 가즈아"}])
         self.assertNotIn("누군가", str(rows))
 
+    def test_search_orders_by_view_count_by_default(self):
+        seen = {}
+
+        def fake_get_json(session, name, url, params=None, limiter=None):
+            seen.update(params)
+            return {"items": []}
+
+        from unittest import mock
+
+        with mock.patch.object(youtube, "get_json", fake_get_json), \
+                mock.patch.dict("os.environ", {"YOUTUBE_API_KEY": "test"}):
+            youtube.search_videos(None, "삼성전자 주가", date(2026, 10, 20))
+            self.assertEqual(seen["order"], "viewCount")
+            youtube.search_videos(None, "삼성전자 주가", date(2026, 10, 20), order="date")
+            self.assertEqual(seen["order"], "date")
+
     def test_error(self):
         with self.assertRaises(RuntimeError):
             youtube.parse_search({"error": {"code": 403, "errors": [{"reason": "quotaExceeded"}]}})

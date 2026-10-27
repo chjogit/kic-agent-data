@@ -667,7 +667,7 @@ def cmd_youtube(args) -> int:
                 term, must = news.terms_for(market, ticker, name)
                 query = f"{term} 주가"
                 try:
-                    videos = youtube.search_videos(s, query, since, args.videos)
+                    videos = youtube.search_videos(s, query, since, args.videos, getattr(args, "order", "viewCount"))
                     videos = [v for v in videos if any(m.lower() in f"{v['title']} {v['summary']}".lower() for m in must)]
                     stats = youtube.video_stats(s, [v["video_id"] for v in videos])
                     db.upsert_youtube_videos(conn, cid, query, videos, stats)
@@ -1134,6 +1134,8 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-youtube"); a.add_argument("--days", type=int, default=7)
     a.add_argument("--videos", type=int, default=5); a.add_argument("--comments", type=int, default=100)
     a.add_argument("--top-kr", type=int, default=None, help="국내는 시총 상위 N종목만 (할당량)")
+    a.add_argument("--order", default="viewCount", choices=["viewCount", "date", "relevance"],
+                   help="영상 정렬 (기본 조회수 순: 댓글이 있는 영상 위주)")
     a.set_defaults(fn=cmd_youtube)
     a = sub.add_parser("collect-investor-flows"); a.add_argument("--days", type=int, default=10)
     a.set_defaults(fn=cmd_investor_flows)
