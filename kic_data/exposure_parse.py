@@ -347,7 +347,7 @@ def ir_sensitivity(t: Table) -> list[Metric]:
             break
     if v is None:
         return []
-    return [Metric("ir_sens", "ALL", v * f, _ir_change(b), _basis(b), t.unit, _evidence(t), t.index, t.file)]
+    return [Metric("ir_sens", "ALL", v * f, _ir_change(b), _basis(b), t.unit, _evidence(t) or b[:300], t.index, t.file)]
 
 
 # ---------------------------------------------------------------- 가격변동 문단 (판가 전가력 근거)
