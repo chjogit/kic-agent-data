@@ -304,11 +304,21 @@ def fx_derivative(tables: list[Table]) -> Metric | None:
 
 # ---------------------------------------------------------------- 묶음
 
+def _section_rank(t: Table) -> int:
+    sec = (t.extra or {}).get("section", "").replace(" ", "")
+    if "연결재무제표주석" in sec or "연결재무제표에대한주석" in sec:
+        return 0
+    if "재무제표주석" in sec or "재무제표에대한주석" in sec:
+        return 1
+    return 2
+
+
 def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
     """원문 파일들 → {'metrics': [Metric], 'risk_text': 환위험 관리 서술(RAG용), 'found': {...}}.
     본문(접수번호.xml) → 첨부(감사보고서) 순으로 보고, 지표마다 처음 찾은 표를 씁니다.
-    환율 민감도는 같은 파일 안에 표가 여럿이면(연결·별도, 지주사의 종속회사 표) 절댓값 합이 가장 큰 표를 씁니다.
-    연결 기준 표가 종속회사·별도 표보다 크기 때문입니다."""
+    환율 민감도는 같은 파일 안에 표가 여럿이면 문서 목차(TITLE)로 고릅니다:
+    '연결재무제표 주석' → '재무제표 주석' → 그 밖(사업의 내용, 계열회사 현황 등) 순. 같은 순위 안에서는 처음 나온 표.
+    지주사 보고서에는 관계회사 표가 함께 실려 있어, 값 크기나 순서만으로 고르면 다른 회사 값을 집을 수 있습니다."""
     from .collectors.dart_doc import tables_from_xml
 
     metrics: list[Metric] = []
@@ -321,7 +331,7 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
         if "fx_sens" not in got:
             cands = [(ms, t) for t in tables if _is_sensitivity(t) for ms in [sensitivity(t)] if ms]
             if cands:
-                ms, t = max(cands, key=lambda c: sum(abs(m.value) for m in c[0]))
+                ms, t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
                 metrics += ms
                 got.add("fx_sens")
                 risk_text = risk_text or t.context

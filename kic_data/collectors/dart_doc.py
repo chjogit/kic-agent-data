@@ -24,6 +24,7 @@ TAG_RE = re.compile(r"<[^>]+>")
 SPAN_RE = re.compile(r'COLSPAN="?(\d+)"?', re.I)
 ROWSPAN_RE = re.compile(r'ROWSPAN="?(\d+)"?', re.I)
 KRW_UNIT_RE = re.compile(r"원화\s*단위\s*[:：]\s*([가-힣]*원)")
+SECTION_RE = re.compile(r"<TITLE\b[^>]*>(.*?)</TITLE>", re.S | re.I)
 UNIT_RE = re.compile(r"단위\s*[:：]\s*([가-힣A-Za-z$,\s]+?)\s*[)\],]")
 
 
@@ -100,10 +101,15 @@ def tables_from_xml(text: str, file: str = "") -> list[Table]:
     """표 목록. '(단위: 백만원)'만 있는 표는 바로 다음 표에 단위·문맥을 넘기고 뺍니다."""
     out: list[Table] = []
     last = 0
+    sections = [(m.start(), clean(m.group(1))) for m in SECTION_RE.finditer(text)]
+    si, section = 0, ""
     pending: tuple[str, str | None] | None = None  # 단위만 있던 표의 (문맥, 단위)
     for i, m in enumerate(TABLE_RE.finditer(text)):
         before = clean(text[max(last, m.start() - 4000):m.start()])[-400:]
         last = m.end()
+        while si < len(sections) and sections[si][0] < m.start():
+            section = sections[si][1]
+            si += 1
         rows = _rows(m.group(1))
         if not rows:
             continue
@@ -119,7 +125,7 @@ def tables_from_xml(text: str, file: str = "") -> list[Table]:
             pending = None
         title_m = re.findall(r"(?:\(\d+\)|\d+\)|[가-하]\.|\d+\.)\s*[^.()]{2,40}", before)
         out.append(Table(rows=rows, context=before, unit=unit, file=file, index=i,
-                         title=title_m[-1].strip() if title_m else ""))
+                         title=title_m[-1].strip() if title_m else "", extra={"section": section}))
     return out
 
 

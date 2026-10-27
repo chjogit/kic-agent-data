@@ -639,7 +639,9 @@ def _probe_extract(args) -> int:
             sens = [m for m in res["metrics"] if m.metric == "fx_sens"]
             if sens:
                 tot = sum(m.value for m in sens)
-                print(f"   ↳ 민감도 표 {sens[0].file}#{sens[0].table_index} 합계 {tot/1e8:,.0f}억 "
+                sec = next((tb.extra.get("section", "") for fn, tx in files.items() if fn == sens[0].file
+                            for tb in dart_doc.tables_from_xml(tx, fn) if tb.index == sens[0].table_index), "")
+                print(f"   ↳ 민감도 표 {sens[0].file}#{sens[0].table_index} [{sec[:30]}] 합계 {tot/1e8:,.0f}억 "
                       f"통화 {[m.currency for m in sens]} 문맥={sens[0].evidence[-100:]!r}")
             if "fx_sens" not in res["found"] and args.show_misses:
                 shown = 0
