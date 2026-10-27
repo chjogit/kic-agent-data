@@ -39,3 +39,9 @@ def test_api_status_lights():
 
 def test_schema_whitelist():
     assert quality.schema_tables(None, "pg_catalog") is None
+
+
+def test_datasets_use_known_freshness_keys():
+    from kic_data import status
+    for name, _last, _count, fresh in quality.DATASETS:
+        assert fresh is None or fresh in status.FRESH_DAYS, name

@@ -6,7 +6,7 @@
   POST /api/jobs/{name}/reset  1회 작업을 처음부터 다시 하도록 초기화 (CRON_SECRET 필요)
   GET  /api/jobs · /api/runs · /api/status · /api/features   JSON 조회
   GET  /quality                데이터 품질 대시보드 (web/quality_dashboard.html)
-  GET  /api/quality/overview · /api/quality/api/{name} · /api/quality/schema/{name} · /api/quality/anomalies
+  GET  /api/quality/overview · /api/quality/data · /api/quality/api/{name} · /api/quality/schema/{name} · /api/quality/anomalies
                                품질 조회 JSON (읽기 전용 트랜잭션)
 
 배포 방법은 docs/DEPLOY_VERCEL.md 를 보세요. 로컬 실행: uvicorn main:app --reload
@@ -223,6 +223,13 @@ def quality_page(request: Request):
 def quality_overview(request: Request):
     _require_viewer(request)
     return _ok(_quality_db(quality.overview))
+
+
+@app.get("/api/quality/data")
+def quality_data(request: Request):
+    """DB 의 현재 데이터 상태 (종목 마스터, 데이터 종류별 건수·최신 값·커버리지·최신성, 지수·거시·문서·공시)."""
+    _require_viewer(request)
+    return _ok(_quality_db(quality.data_status))
 
 
 @app.get("/api/quality/api/{name}")

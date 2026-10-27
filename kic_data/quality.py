@@ -183,3 +183,60 @@ def schema_tables(conn, schema: str) -> dict | None:
                 except Exception:  # noqa: BLE001
                     cur.execute("ROLLBACK TO SAVEPOINT cnt")
     return {"schema": schema, "tables": tables, "count_note": "추정치(pg_class.reltuples)"}
+
+
+# ---------------------------------------------------------------- 데이터 현황 (status.collect 요약)
+
+# (이름, 최신 값 키, 건수 키, 최신성 기준 키)
+DATASETS = [
+    ("국내·해외 시세", "price_to", "price_rows", "price"),
+    ("재무 원본(연간 연도 수)", "fin_to", "annual_years", None),
+    ("분기 단독 값", "last_quarter", "quarters", None),
+    ("TTM", "ttm_end", None, None),
+    ("공시", "disclosure_last", "disclosures", "disclosure"),
+    ("네이버 뉴스", "news_last", "news_docs", "news"),
+    ("블로그", "blog_last", "blog_docs", "blog"),
+    ("카페", "cafe_last", "cafe_docs", "cafe"),
+    ("감성 점수", None, "scored_docs", None),
+    ("검색 관심도", "trend_last", "trend_days", "trend"),
+    ("언급량 스냅샷", "mention_last", "mention_days", "mention"),
+    ("5개 관점 지표", "feature_as_of", "features_filled", "feature"),
+]
+
+
+def data_status(conn, today=None) -> dict:
+    """DB 의 현재 데이터 상태: 종목 마스터, 데이터 종류별 건수·최신 값·종목 커버리지·최신성, 지수·거시·문서·공시."""
+    from zoneinfo import ZoneInfo
+
+    from . import status
+
+    today = today or datetime.now(ZoneInfo("Asia/Seoul")).date()
+    st = status.collect(conn, today)
+    cos = st["companies"]
+    kr = [c for c in cos if c["market"] == "KR"]
+    us = [c for c in cos if c["market"] == "US"]
+    master = {"total": len(cos), "kr": len(kr), "us": len(us),
+              "kr_dart_code": sum(c["corp_code"] for c in kr), "us_cik": sum(c["cik"] for c in us),
+              "sector": sum(c["sector"] for c in cos), "shares": sum(c["shares"] for c in cos)}
+
+    datasets = []
+    for name, last_key, count_key, fresh_key in DATASETS:
+        covered = sum(1 for c in cos if c.get(count_key or last_key))
+        lasts = [c[last_key] for c in cos if last_key and c.get(last_key) is not None]  # 키마다 date 또는 datetime 한 종류
+        last = max(lasts) if lasts else None
+        stale = (sum(1 for v in lasts if status.freshness(v, today, status.FRESH_DAYS[fresh_key]) != "OK")
+                 if fresh_key else None)  # 종목별 최신 값이 기준보다 오래된 종목 수
+        datasets.append({
+            "name": name, "covered": covered, "total": len(cos),
+            "rows": sum(int(c.get(count_key) or 0) for c in cos) if count_key else None,
+            "latest": last, "stale": stale,
+            "freshness": status.freshness(last, today, status.FRESH_DAYS[fresh_key]) if fresh_key
+            else ("없음" if covered == 0 else "-"),
+        })
+    indices = [{**i, "freshness": status.freshness(i["to"], today, status.FRESH_DAYS["index"])} for i in st["indices"]]
+    macro = [{**m, "freshness": status.freshness(
+        m["to"], today, status.FRESH_DAYS["macro_D" if m["frequency"] == "D" else "macro_M"])} for m in st["macro"]]
+    return {"checked_at": today, "master": master, "datasets": datasets, "indices": indices,
+            "macro": macro, "macro_stale": sum(m["freshness"] != "OK" for m in macro),
+            "documents": st["documents"], "disclosures": st["disclosures"],
+            "peer_groups": len(st["peer_groups"])}
