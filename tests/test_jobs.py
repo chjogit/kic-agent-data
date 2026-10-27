@@ -363,3 +363,20 @@ def test_sync_dart_resets_followups_only_for_newly_linked(monkeypatch):
                                                                (2, "000660", "SK하이닉스", None, None)])
     assert cli.cmd_sync_dart(None) == 0
     assert resets == [jobs.DART_FOLLOWUPS]
+
+def test_etf_uses_v2_endpoint_and_inclusive_end(monkeypatch):
+    calls = {}
+
+    def fake_get_json(session, name, url, params=None, limiter=None):
+        calls.update(url=url, params=params)
+        return {"response": {"header": {"resultCode": "00"}, "body": {"items": {"item": [
+            {"basDt": "20261023", "srtnCd": "069500", "clpr": "40000"},
+            {"basDt": "20261023", "srtnCd": "0695001", "clpr": "1"}]}}}}
+
+    monkeypatch.setattr(etf, "get_json", fake_get_json)
+    monkeypatch.setattr(etf, "data_go_key", lambda: "k")
+    rows = etf.fetch_etf(None, "069500", "20261001", "20261023")
+    assert calls["url"].endswith("/1160100/GetSecuritiesProductInfoService_V2/getETFPriceInfo_V2")
+    assert calls["params"]["endBasDt"] == "20261024" and calls["params"]["beginBasDt"] == "20261001"
+    assert [r["ticker"] for r in rows] == ["069500"]
+    assert etf.next_ymd("20261231") == "20270101"
