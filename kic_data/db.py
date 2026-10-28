@@ -256,20 +256,47 @@ def upsert_index_rows(conn, symbol: str, name: str, rows: list[dict], source: st
     return len(params)
 
 
-def upsert_etf_prices(conn, ticker: str, name: str, rows: list[dict], source: str) -> int:
+def upsert_etf_prices(conn, ticker: str, name: str, rows: list[dict], source: str,
+                      market: str = "KR", currency: str = "KRW") -> int:
     sql = (
         "INSERT INTO core.etf_price_daily (ticker, trade_date, name, close, nav, volume, trade_value, market_cap, "
-        "net_assets, base_index, source) VALUES (%(ticker)s, %(trade_date)s, %(name)s, %(close)s, %(nav)s, %(volume)s, "
-        "%(trade_value)s, %(market_cap)s, %(net_assets)s, %(base_index)s, %(source)s) "
+        "net_assets, base_index, source, market, currency) VALUES (%(ticker)s, %(trade_date)s, %(name)s, %(close)s, "
+        "%(nav)s, %(volume)s, %(trade_value)s, %(market_cap)s, %(net_assets)s, %(base_index)s, %(source)s, "
+        "%(market)s, %(currency)s) "
         "ON CONFLICT (ticker, trade_date) DO UPDATE SET name=EXCLUDED.name, close=EXCLUDED.close, nav=EXCLUDED.nav, "
         "volume=EXCLUDED.volume, trade_value=EXCLUDED.trade_value, market_cap=EXCLUDED.market_cap, "
-        "net_assets=EXCLUDED.net_assets, base_index=EXCLUDED.base_index, source=EXCLUDED.source, collected_at=now()"
+        "net_assets=EXCLUDED.net_assets, base_index=EXCLUDED.base_index, source=EXCLUDED.source, "
+        "market=EXCLUDED.market, currency=EXCLUDED.currency, collected_at=now()"
     )
-    params = [{**r, "ticker": ticker, "name": r.get("name") or name, "source": source} for r in rows]
+    keys = ("trade_date", "close", "nav", "volume", "trade_value", "market_cap", "net_assets", "base_index")
+    params = [{**{k: r.get(k) for k in keys}, "ticker": ticker, "name": r.get("name") or name, "source": source,
+               "market": market, "currency": currency} for r in rows]
     with conn.cursor() as cur:
         cur.executemany(sql, params)
     conn.commit()
     return len(params)
+
+
+def etf_first_dates(conn) -> dict:
+    """ETF 별 가장 오래된 시세 날짜. 새로 추가된 ETF 를 알아보고 과거분을 함께 받는 데 씁니다."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT ticker, min(trade_date) FROM core.etf_price_daily GROUP BY ticker")
+        out = dict(cur.fetchall())
+    conn.commit()
+    return out
+
+
+def upsert_etf_info(conn, ticker: str, name: str, market: str, category: str | None,
+                    base_index: str | None, name_check: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO core.etf_info (ticker, name, market, category, base_index, name_check) "
+            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (ticker) DO UPDATE SET name=EXCLUDED.name, "
+            "market=EXCLUDED.market, category=EXCLUDED.category, base_index=COALESCE(EXCLUDED.base_index, "
+            "core.etf_info.base_index), name_check=EXCLUDED.name_check, updated_at=now()",
+            (ticker, name, market, category, base_index, name_check),
+        )
+    conn.commit()
 
 
 def upsert_disclosures(conn, company_id: int, rows: list[dict], source: str) -> int:

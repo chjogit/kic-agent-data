@@ -27,7 +27,8 @@
   score-sentiment  뉴스·블로그·카페글 제목+요약 감성 점수 → core.doc_sentiment
   daily-update     위 수집을 한 번에 최근분만 갱신 + 지표 재계산·features.json (스케줄러용)
   embed-docs       청크가 없는 문서를 청킹·임베딩해 rag.chunk 에 적재
-  collect-etf      국내 ETF 시세·NAV (금융위원회 증권상품시세정보, universe.py 의 ETF_UNIVERSE)
+  collect-etf      국내 ETF 시세·NAV (금융위원회 증권상품시세정보, universe.py 의 ETF_UNIVERSE, 처음 보는 ETF 는 5년치)
+  collect-us-etf   해외 ETF 시세 (yfinance, universe.py 의 US_ETF_UNIVERSE: SPY·VOO·QQQ)
   collect-finnhub  해외 종목 영문 뉴스 (Finnhub, FINNHUB_API_KEY 있을 때만)
   collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-investor-flows  국내 종목 투자자별(외국인·기관·개인) 일별 순매수 (네이버 증권 공개 API)
@@ -49,7 +50,8 @@ from .collectors import (community, customs, dart, etf, finnhub, fsc, indices, i
                          news, sec, trends, us_prices, youtube)
 from .config import env
 from .http_util import make_session
-from .universe import ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_UNIVERSE
+from .universe import (ETF_CATEGORY, ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_ETF_UNIVERSE, US_UNIVERSE,
+                       etf_name_mismatch)
 from .util import date_windows, drop_incomplete_today, ymd
 
 
@@ -898,15 +900,36 @@ def cmd_macro(args) -> int:
     return 1 if bad else 0
 
 
+ETF_BACKFILL_DAYS = 1825  # 처음 보는 ETF 는 5년치를 함께 받습니다 (backfill-etf 는 1회 작업이라 새 ETF 를 못 받음)
+
+
+def etf_begin(first: date | None, begin: date, today: date | None = None) -> date:
+    """이미 받은 적 있는 ETF 는 요청 기간(begin)부터, 처음 보는 ETF 는 5년 전부터."""
+    if first is not None:
+        return begin
+    return min(begin, (today or date.today()) - timedelta(days=ETF_BACKFILL_DAYS))
+
+
+def _record_etf_info(conn, ticker: str, name: str, market: str, rows: list[dict]) -> str:
+    category = ETF_CATEGORY.get(ticker, (None, None))[0]
+    last = rows[-1] if rows else {}
+    api_name = last.get("name")
+    check = "unknown" if not api_name else ("mismatch" if etf_name_mismatch(ticker, api_name) else "ok")
+    db.upsert_etf_info(conn, ticker, api_name or name, market, category, last.get("base_index"), check)
+    return check
+
+
 def cmd_etf(args) -> int:
     s = make_session()
     end, begin = date.today(), date.today() - timedelta(days=args.days)
     bad = 0
     with db.connect() as conn:
+        firsts = db.etf_first_dates(conn)
         for ticker, name in ETF_UNIVERSE:
+            start = etf_begin(firsts.get(ticker), begin)
             by_date = {}
             try:
-                for a, b in date_windows(begin, end, 330):
+                for a, b in date_windows(start, end, 330):
                     for r in etf.fetch_etf(s, ticker, ymd(a), ymd(b)):
                         by_date[r["trade_date"]] = r
             except RuntimeError as exc:
@@ -915,7 +938,32 @@ def cmd_etf(args) -> int:
                 continue
             rows = drop_incomplete_today([by_date[d] for d in sorted(by_date)], "KR")
             n = db.upsert_etf_prices(conn, ticker, name, rows, "fsc_etf")
-            _ok(f"ETF {ticker} {name}", f"{n}행")
+            check = _record_etf_info(conn, ticker, name, "KR", rows) if rows else "unknown"
+            note = " (처음 수집: 5년치)" if ticker not in firsts else ""
+            if check == "mismatch":
+                print(f"[WARN] ETF {ticker}: 원천 종목명 '{rows[-1].get('name')}' 이 기대({name})와 달라 종목코드 확인 필요")
+            _ok(f"ETF {ticker} {name}", f"{n}행{note}")
+    return 1 if bad else 0
+
+
+def cmd_us_etf(args) -> int:
+    """해외 상장 ETF 일별 시세 (yfinance). 국내 ETF 와 같은 표에 market='US', 통화 USD 로 넣습니다. NAV 는 없음."""
+    begin = date.today() - timedelta(days=args.days)
+    bad = 0
+    with db.connect() as conn:
+        firsts = db.etf_first_dates(conn)
+        for ticker, name in US_ETF_UNIVERSE:
+            start = etf_begin(firsts.get(ticker), begin)
+            try:
+                rows = drop_incomplete_today(us_prices.fetch_prices(ticker, start.isoformat()), "US")
+            except Exception as exc:  # yfinance 일시 차단(429 등) → 다음 실행에서 다시
+                _fail(ticker, f"{type(exc).__name__}: {str(exc)[:120]}")
+                bad += 1
+                continue
+            n = db.upsert_etf_prices(conn, ticker, name, rows, "yfinance", market="US", currency="USD")
+            if rows:
+                _record_etf_info(conn, ticker, name, "US", rows)
+            _ok(f"ETF {ticker} {name}", f"{n}행 (yfinance)" + (" (처음 수집: 5년치)" if ticker not in firsts else ""))
     return 1 if bad else 0
 
 
@@ -1453,6 +1501,7 @@ def main(argv=None) -> int:
     a.add_argument("--lane", default=None, help="병렬 실행 줄 하나만 (jobs.LANES: 준비, dart, public, naver, naver_etc, global, 계산)")
     a.set_defaults(fn=cmd_tick)
     a = sub.add_parser("collect-etf"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_etf)
+    a = sub.add_parser("collect-us-etf"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_us_etf)
     a = sub.add_parser("collect-finnhub"); a.add_argument("--days", type=int, default=7); a.set_defaults(fn=cmd_finnhub)
     a = sub.add_parser("collect-youtube"); a.add_argument("--days", type=int, default=7)
     a.add_argument("--videos", type=int, default=5); a.add_argument("--comments", type=int, default=100)

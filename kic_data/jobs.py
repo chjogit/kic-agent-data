@@ -126,6 +126,7 @@ JOBS: list[Job] = [
     Job("us-prices", "해외 시세", "cmd_us_prices", {"days": 10}, needs=DB, split=("US",), chunk=10),
     Job("indices", "시장 지수", "cmd_indices", {"days": 10}, needs=DB),
     Job("etf-prices", "ETF 시세", "cmd_etf", {"days": 10}, needs=DB + ("FSC_API_KEY",)),
+    Job("us-etf-prices", "해외 ETF 시세(SPY·VOO·QQQ)", "cmd_us_etf", {"days": 10}, needs=DB),
     Job("macro", "거시·업황 지표", "cmd_macro", {"years": 1}, needs=DB, needs_any=("ECOS_API_KEY", "FRED_API_KEY")),
     Job("disclosures", "공시 목록(시장 전체 조회)", "cmd_disclosures", {"days": 3, "types": "A,B,I", "bulk": True},
         needs=DB + ("DART_API_KEY", "SEC_USER_AGENT")),
