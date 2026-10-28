@@ -241,11 +241,13 @@ def quality_schema(name: str, request: Request):
 
 
 @app.get("/api/quality/anomalies")
-def quality_anomalies(request: Request, limit: int = 50, severity: str | None = None):
+def quality_anomalies(request: Request, limit: int = 50, severity: str | None = None, include_resolved: bool = False):
+    """이상 이벤트. 기본은 해결 안 된 것만, include_resolved=true 면 정상으로 돌아와 해결된 것도."""
     _require_viewer(request)
     if severity not in (None, "info", "warn", "error"):
         raise HTTPException(400, "severity 는 info / warn / error 중 하나입니다.")
-    return _ok(_quality_db(lambda conn: quality.anomalies(conn, max(1, min(limit, 500)), severity)))
+    return _ok(_quality_db(lambda conn: quality.anomalies(conn, max(1, min(limit, 500)), severity,
+                                                          include_resolved)))
 
 
 # ---------------------------------------------------------------- 대시보드

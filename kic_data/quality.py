@@ -2,6 +2,8 @@
 
 쓰기: 수집 작업(jobs.run_job)이 끝날 때마다 record_job 이 작업 → 원천 API 상태를 갱신하고,
       실패·일부 실패는 quality.checks 에 이상 이벤트로 남깁니다.
+      같은 작업이 다시 정상으로 끝나면 그 작업의 이벤트는 '해결됨'(resolved)으로 바뀌어 대시보드에서 빠집니다.
+      작업마다 해결 안 된 이벤트는 최신 1건만 남깁니다 (이전 것은 '대체됨'으로 해결 처리).
 읽기: 품질 대시보드(main.py 의 /quality, /api/quality/*). 읽기 함수는 SELECT 만 합니다.
 """
 from __future__ import annotations
@@ -61,9 +63,50 @@ def api_status(row: dict, now: datetime | None = None) -> str:
 
 # ---------------------------------------------------------------- 쓰기 (수집 작업에서)
 
+JOB_RULES = ("job_failed", "job_partial_fail")  # 작업 결과로 생기는 이벤트 (작업 이름이 target)
+OK_STATUSES = ("ok", "partial")  # partial: 이번 묶음은 정상, 다음 묶음 남음
+
+# 해결 표시: resolved=true 와 details.resolved_at·resolved_by (recovered / superseded / job_removed)
+_RESOLVE_SET = ("resolved = true, details = coalesce(details, '{}'::jsonb) || "
+                "jsonb_build_object('resolved_at', %s::timestamptz, 'resolved_by', %s::text)")
+
+
+def resolve_reason(status: str) -> str:
+    """작업이 끝났을 때 그 작업의 이전 이벤트를 해결 처리하는 이유. 정상이면 회복, 아니면 새 이벤트로 대체."""
+    return "recovered" if status in OK_STATUSES else "superseded"
+
+
+def resolve_job_checks(cur, job: str, status: str, finished: datetime) -> None:
+    """이 작업의 해결 안 된 이벤트를 해결 처리합니다 (새 실패·일부 실패는 이 뒤에 다시 남김)."""
+    cur.execute(f"UPDATE quality.checks SET {_RESOLVE_SET} "
+                "WHERE NOT resolved AND target = %s AND rule_id = ANY(%s) AND check_time <= %s",
+                [finished, resolve_reason(status), job, list(JOB_RULES), finished])
+
+
+def resolve_stale(conn, known_jobs, now: datetime | None = None) -> None:
+    """이전 기록 정리 (매 작업 뒤, 몇 ms): 그 뒤 정상으로 끝난 작업, 같은 작업의 더 새 이벤트가 있는 것,
+    작업 목록에 없는 작업(삭제됐거나 병합 전 브랜치에서만 돈 작업)의 이벤트를 해결 처리합니다."""
+    now = now or datetime.now(timezone.utc)
+    rules = list(JOB_RULES)
+    with conn.cursor() as cur:
+        cur.execute(f"UPDATE quality.checks c SET {_RESOLVE_SET} FROM ops.job_state s "
+                    "WHERE NOT c.resolved AND c.rule_id = ANY(%s) AND s.job = c.target "
+                    "AND s.last_status = ANY(%s) AND s.last_finished > c.check_time",
+                    [now, "recovered", rules, list(OK_STATUSES)])
+        cur.execute(f"UPDATE quality.checks c SET {_RESOLVE_SET} "
+                    "WHERE NOT c.resolved AND c.rule_id = ANY(%s) AND EXISTS (SELECT 1 FROM quality.checks n "
+                    "WHERE n.target = c.target AND n.rule_id = ANY(%s) AND n.check_time > c.check_time)",
+                    [now, "superseded", rules, rules])
+        cur.execute(f"UPDATE quality.checks SET {_RESOLVE_SET} "
+                    "WHERE NOT resolved AND rule_id = ANY(%s) AND NOT (target = ANY(%s))",
+                    [now, "job_removed", rules, sorted(known_jobs)])
+    conn.commit()
+
+
 def record_job(conn, job: str, *, status: str, seconds: float, detail: str | None, log: str,
                finished: datetime) -> None:
-    """작업 결과를 원천 API 상태·이상 이벤트로 남깁니다. 키가 없어 건너뛴 작업은 기록하지 않습니다."""
+    """작업 결과를 원천 API 상태·이상 이벤트로 남깁니다. 키가 없어 건너뛴 작업은 기록하지 않습니다.
+    이전 이벤트는 먼저 해결 처리하고(정상이면 회복, 아니면 대체), 이번이 실패·일부 실패면 새로 남깁니다."""
     api = API_OF_JOB.get(job)
     if api is None or status == "skipped":
         return
@@ -91,6 +134,7 @@ def record_job(conn, job: str, *, status: str, seconds: float, detail: str | Non
             if status == "warn" and msg:
                 cur.execute("UPDATE quality.api_status SET last_error = %s, last_error_msg = %s WHERE api_name = %s",
                             [finished, msg, api])
+        resolve_job_checks(cur, job, status, finished)
         if status in ("failed", "warn"):
             cur.execute(
                 "INSERT INTO quality.checks (check_time, source, rule_id, severity, target, message, details) "
@@ -108,9 +152,16 @@ def _rows(cur) -> list[dict]:
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def error_resolved(r: dict) -> bool:
+    """최근 오류 뒤에 성공이 있으면 True (오류는 기록으로만 보여 줌). 일부 실패(warn)는 같은 시각이라 False."""
+    err, ok = r.get("last_error"), r.get("last_success")
+    return bool(err and ok and ok > err and not (r.get("consecutive_failures") or 0))
+
+
 def _api_item(r: dict, now: datetime) -> dict:
     return {"api": r["api_name"], "status": api_status(r, now), "last_success": r.get("last_success"),
             "last_error": r.get("last_error"), "last_error_msg": r.get("last_error_msg"),
+            "error_resolved": error_resolved(r),
             "consecutive_failures": r.get("consecutive_failures") or 0, "quota_hit": bool(r.get("quota_hit")),
             "last_run_duration_ms": r.get("last_run_duration_ms"), "updated_at": r.get("updated_at")}
 
@@ -137,8 +188,9 @@ def api_detail(conn, name: str, limit: int = 20) -> dict | None:
         rows = _rows(cur)
         if not rows and name not in API_NAMES:
             return None
-        cur.execute("SELECT check_time AS time, severity, rule_id AS rule, target, message FROM quality.checks "
-                    "WHERE source = %s ORDER BY check_time DESC LIMIT %s", [name, limit])
+        cur.execute("SELECT check_time AS time, severity, rule_id AS rule, target, message, resolved, "
+                    "details->>'resolved_at' AS resolved_at, details->>'resolved_by' AS resolved_by "
+                    "FROM quality.checks WHERE source = %s ORDER BY check_time DESC LIMIT %s", [name, limit])
         checks = _rows(cur)
     item = _api_item(rows[0] if rows else {"api_name": name}, now)
     item["jobs"] = sorted(j for j, a in API_OF_JOB.items() if a == name)
@@ -146,13 +198,18 @@ def api_detail(conn, name: str, limit: int = 20) -> dict | None:
     return item
 
 
-def anomalies(conn, limit: int = 50, severity: str | None = None) -> dict:
-    sql = ("SELECT id, check_time AS time, source, rule_id AS rule, severity, target, message, resolved "
-           "FROM quality.checks")
-    params: list = []
+def anomalies(conn, limit: int = 50, severity: str | None = None, include_resolved: bool = False) -> dict:
+    """이상 이벤트. 기본은 해결 안 된 것만 (정상으로 돌아온 작업의 경고·오류는 빠짐)."""
+    sql = ("SELECT id, check_time AS time, source, rule_id AS rule, severity, target, message, resolved, "
+           "details->>'resolved_at' AS resolved_at, details->>'resolved_by' AS resolved_by FROM quality.checks")
+    where, params = [], []
+    if not include_resolved:
+        where.append("NOT resolved")
     if severity:
-        sql += " WHERE severity = %s"
+        where.append("severity = %s")
         params.append(severity)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY check_time DESC LIMIT %s"
     params.append(limit)
     with conn.cursor() as cur:

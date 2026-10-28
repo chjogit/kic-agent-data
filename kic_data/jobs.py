@@ -275,6 +275,7 @@ class DbState:
         try:  # 품질 기록(sql/017)은 실패해도 수집 기록·다음 작업에 영향을 주지 않게
             self._run(lambda conn: quality.record_job(conn, job, status=status, seconds=seconds, detail=detail,
                                                       log=log, finished=finished))
+            self._run(lambda conn: quality.resolve_stale(conn, JOB_BY_NAME))
         except Exception:  # noqa: BLE001
             try:
                 self.conn.rollback()
@@ -576,7 +577,7 @@ def overview(state, getenv=None) -> list[dict]:
         missing = job.missing_env(getenv)
         out.append({
             "name": job.name, "label": job.label, "group": job.group,
-            "every": "1회" if job.every is ONCE else {HOUR: "매 실행", SIX_HOURS: "6시간", DAY: "매일", WEEK: "매주"}.get(job.every, str(job.every)),
+            "every": "1회" if job.every is ONCE else {EVERY_RUN: "매 실행", HOUR: "매시간", SIX_HOURS: "6시간", DAY: "매일", WEEK: "매주"}.get(job.every, str(job.every)),
             "status": st.get("last_status"), "detail": st.get("detail"),
             "last_finished": st.get("last_finished"), "last_complete": st.get("last_complete"),
             "seconds": None if st.get("last_seconds") is None else float(st["last_seconds"]),
