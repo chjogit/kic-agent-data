@@ -18,6 +18,7 @@ from argparse import Namespace
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as dtime
 from typing import Callable
 
 from . import db, quality
@@ -47,6 +48,7 @@ class Job:
     split: tuple[str, ...] = ()  # 종목을 나눠 처리할 시장 ("KR", "US")
     chunk: int = 6
     group: str = "매시간"
+    after_kst: dtime | None = None  # 하루 한 번, 한국시간 이 시각 이후에만 (장 마감 뒤 확정되는 자료용)
 
     def namespace(self) -> Namespace:
         return Namespace(**{k: (v() if callable(v) else v) for k, v in self.kwargs.items()})
@@ -141,7 +143,9 @@ JOBS: list[Job] = [
         every=DAY, needs=DB + ("YOUTUBE_API_KEY",)),
     # ↑ 검색 1회 100단위(하루 10,000)라 영상이 많은 국내 시총 상위 40종목 + 해외 종목만 매일 (약 5,700 + 댓글 수백)
     Job("investor-flows", "투자자별 순매수(외국인·기관·개인)", "cmd_investor_flows", {"days": 10}, every=DAY,
-        needs=DB, split=("KR",), chunk=50),  # 네이버 비공식 API 라 종목당 하루 1회만
+        needs=DB, split=("KR",), chunk=50, after_kst=dtime(18, 30)),
+    # ↑ 네이버 비공식 API 라 종목당 하루 1회만. 투자자별 수치는 장 마감 뒤 확정되므로 한국시간 18:30 이후에 돌려
+    #   그날 수급까지 받음 (이전에는 마지막 완료 + 24시간이라 오전에 돌면 전 거래일까지만 들어와 가격보다 하루 늦었음)
     Job("lending", "대차거래(코스피 전 종목, 공매도 대용)", "cmd_lending", {"days": 365, "max_days": 40},
         needs=DB, needs_any=DATA_GO),  # 빠진 거래일만 최근부터 40일씩 (1년치는 몇 시간에 걸쳐 채움, 이후엔 하루 1~2회 호출)
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
@@ -357,6 +361,18 @@ def ensure_schema(conn) -> bool:
 
 # ---------------------------------------------------------------- 판단
 
+KST = timezone(timedelta(hours=9))
+
+
+def last_cutoff(after: dtime, now: datetime) -> datetime:
+    """now 이전(포함) 가장 최근의 '한국시간 after' 시각 (UTC aware)."""
+    local = now.astimezone(KST)
+    cut = datetime.combine(local.date(), after, tzinfo=KST)
+    if cut > local:
+        cut -= DAY
+    return cut.astimezone(timezone.utc)
+
+
 def due_reason(job: Job, st: dict | None, now: datetime, missing: list[str]) -> str | None:
     """실행할 차례면 이유 문자열, 아니면 None."""
     st = st or {}
@@ -382,6 +398,8 @@ def due_reason(job: Job, st: dict | None, now: datetime, missing: list[str]) -> 
         return "처음"
     if job.every is ONCE:
         return None
+    if job.after_kst is not None:  # 그날 기준 시각 이후 아직 끝내지 않았으면
+        return "기준 시각 이후" if complete < last_cutoff(job.after_kst, now) else None
     return "주기" if now - complete >= job.every - timedelta(minutes=5) else None
 
 
@@ -391,6 +409,8 @@ def next_due(job: Job, st: dict | None) -> datetime | None:
         return None  # 바로
     if job.every is ONCE:
         return None
+    if job.after_kst is not None:
+        return last_cutoff(job.after_kst, st["last_complete"]) + DAY
     return st["last_complete"] + job.every
 
 
