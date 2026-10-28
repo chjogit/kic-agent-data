@@ -24,7 +24,7 @@
     </nav>
   <div class="info">
     <span>마지막 갱신 <b id="updated">—</b> KST</span>
-    <span>수집 작업(GitHub Actions 매시 7분)이 끝날 때마다 원천 API 상태와 실패를 기록합니다</span>
+    <span>수집 작업(매시 15분 cron-job.org 실행, 7분 GitHub 예약은 비상용)이 끝날 때마다 원천 API 상태와 실패를 기록합니다. 같은 작업이 다시 정상으로 끝나면 경고·오류는 해결됨으로 빠집니다</span>
     <span id="sample-note" style="display:none;color:var(--warn);font-weight:600;">API 에 연결하지 못해 샘플 데이터를 보여 주고 있습니다</span>
   </div>
 
@@ -54,6 +54,9 @@
   </section>
 
   <section id="anomalies" class="section">
+    <label style="display:inline-flex;gap:6px;align-items:center;font-size:0.85rem;color:var(--dim);margin-bottom:0.6rem;cursor:pointer;">
+      <input type="checkbox" id="show-resolved" onchange="loadAnomalies()"> 해결된 이벤트도 보기 (정상으로 돌아온 작업)
+    </label>
     <div class="table-wrap"><table>
       <thead><tr><th>시간(KST)</th><th>소스</th><th>규칙</th><th>심각도</th><th>대상</th><th>메시지</th></tr></thead>
       <tbody id="anomaly-table"></tbody>
@@ -91,6 +94,10 @@ function lightClass(s) {
   return ['ok','warn','error'].includes(s) ? s : 'unknown';
 }
 const STATUS_KO = {ok:'정상', warn:'주의', error:'오류', unknown:'기록 없음'};
+const RESOLVED_KO = {recovered:'정상 회복', superseded:'새 이벤트로 대체', job_removed:'작업 없음(삭제·미병합)'};
+const resolvedNote = c => c.resolved
+  ? ` <span style="color:var(--dim);">· 해결됨${c.resolved_by ? ' (' + esc(RESOLVED_KO[c.resolved_by] || c.resolved_by) + (c.resolved_at ? ', ' + ts(c.resolved_at) : '') + ')' : ''}</span>`
+  : '';
 function badge(s) {
   return `<span class="badge ${lightClass(s)}">${esc(s)}</span>`;
 }
@@ -151,13 +158,13 @@ async function showApiDetail(name) {
       <div class="back" onclick="loadApis()">← 목록</div>
       <h3><span class="light ${lightClass(d.status)}"></span>${esc(d.api)} <span style="font-size:0.85rem;color:var(--dim);">${STATUS_KO[d.status] || ''}</span></h3>
       <p style="margin:0.5rem 0;font-size:0.9rem;">최근 성공: ${ts(d.last_success)}</p>
-      <p style="font-size:0.9rem;">최근 오류: ${ts(d.last_error)} ${esc(d.last_error_msg || '')}</p>
+      <p style="font-size:0.9rem;${d.error_resolved ? 'color:var(--dim);' : ''}">최근 오류: ${ts(d.last_error)} ${esc(d.last_error_msg || '')}${d.error_resolved ? ' · 이후 정상' : ''}</p>
       <p style="font-size:0.9rem;">연속 실패: ${esc(d.consecutive_failures)} · 한도 초과 의심: ${d.quota_hit ? '예' : '아니오'}
         · 최근 소요: ${d.last_run_duration_ms != null ? (d.last_run_duration_ms/1000).toFixed(1) + '초' : '—'}</p>
       <p style="font-size:0.85rem;color:var(--dim);">관련 작업: ${(d.jobs||[]).map(esc).join(', ') || '—'}</p>
       <h4 style="margin-top:1rem;">최근 체크</h4>
       <ul style="font-size:0.85rem;color:var(--dim);margin-left:1rem;">
-        ${(d.recent_checks||[]).map(c => `<li>${ts(c.time)} [${esc(c.severity)}] ${esc(c.rule)} ${esc(c.target||'')}: ${esc(c.message||'')}</li>`).join('') || '<li>없음</li>'}
+        ${(d.recent_checks||[]).map(c => `<li${c.resolved ? ' style="opacity:0.55"' : ''}>${ts(c.time)} [${esc(c.severity)}] ${esc(c.rule)} ${esc(c.target||'')}: ${esc(c.message||'')}${resolvedNote(c)}</li>`).join('') || '<li>없음</li>'}
       </ul>
     </div>
   `;
@@ -180,18 +187,19 @@ async function loadSchema(name) {
 }
 
 async function loadAnomalies() {
-  const d = await fetchJSON('/api/quality/anomalies?limit=50');
+  const all = document.getElementById('show-resolved')?.checked;
+  const d = await fetchJSON('/api/quality/anomalies?limit=50' + (all ? '&include_resolved=true' : ''));
   const rows = (d && d.anomalies) || [];
   document.getElementById('anomaly-table').innerHTML = rows.length
-    ? rows.map(a => `<tr>
+    ? rows.map(a => `<tr${a.resolved ? ' style="opacity:0.55"' : ''}>
         <td>${ts(a.time)}</td>
         <td>${esc(a.source)}</td>
         <td>${esc(a.rule)}</td>
-        <td>${badge(a.severity)}</td>
+        <td>${a.resolved ? '<span class="badge ok">해결됨</span>' : badge(a.severity)}</td>
         <td>${esc(a.target||'')}</td>
-        <td>${esc(a.message||'')}</td>
+        <td>${esc(a.message||'')}${resolvedNote(a)}</td>
       </tr>`).join('')
-    : `<tr><td colspan="6" style="color:var(--dim);">${d ? '이상 이벤트 없음' : 'API 미연결'}</td></tr>`;
+    : `<tr><td colspan="6" style="color:var(--dim);">${d ? (all ? '이상 이벤트 없음' : '해결 안 된 이상 이벤트 없음 (모두 정상)') : 'API 미연결'}</td></tr>`;
 }
 
 function freshCls(f) {
