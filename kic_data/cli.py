@@ -7,7 +7,7 @@
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
   seed-companies   universe.py 의 종목을 core.company 에 등록
   sync-dart-codes  DART 고유번호를 KR 종목에 연결
-  collect-company-info  업종코드·발행주식수 채우기
+  collect-company-info  업종코드·정식 회사명·발행주식수 채우기
   build-peer-groups     universe.py 의 PEER_THEMES 로 Peer Group 생성
   show-valuation        PER/PBR/영업이익률/ROE 비교표 출력 (연간 기준)
   collect-dart-q / collect-sec-q  분기 재무 수집
@@ -1097,7 +1097,7 @@ def cmd_sync_kospi200(args) -> int:
 
 
 def cmd_company_info(args) -> int:
-    """업종코드(DART KSIC / SEC SIC)와 발행주식수(국내 FSC 상장주식수 / 해외 SEC 표지)를 core.company 에 채웁니다."""
+    """업종코드(DART KSIC / SEC SIC), 국내 정식 회사명(DART 기업개황)과 발행주식수(국내 FSC 상장주식수 / 해외 SEC 표지)를 core.company 에 채웁니다."""
     s = make_session()
     with db.connect() as conn:
         companies = {m: db.list_companies(conn, m) for m in ("KR", "US")}
@@ -1106,10 +1106,10 @@ def cmd_company_info(args) -> int:
                 print(f"[WARN] {ticker} corp_code 없음 → sync-dart-codes 먼저")
                 continue
             info = dart.fetch_company(s, corp_code)
-            db.update_company_info(conn, cid, sector=info["induty_code"])
+            db.update_company_info(conn, cid, sector=info["induty_code"], legal_name=info["corp_name"])
             sector = krx_sector.ksic_to_krx(info["induty_code"], ticker)
             db.set_krx_sector(conn, cid, sector)
-            _ok(f"KR {ticker}", f"KSIC {info['induty_code']} → KRX 업종 {sector or '-'}")
+            _ok(f"KR {ticker}", f"KSIC {info['induty_code']} → KRX 업종 {sector or '-'}, 정식 회사명 {info['corp_name'] or '-'}")
             if getattr(args, "skip_kr_shares", False):
                 continue  # 상장주식수는 국내 시세(전 종목 조회) 작업이 매번 갱신
             today = date.today()
