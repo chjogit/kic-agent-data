@@ -30,6 +30,8 @@ SPAM = (
     "소액결제", "대출", "보험", "분양", "지원금", "수수료",
 )
 QUERY_SUFFIXES = ("주가", "주식")
+# 네이버 검색 API 는 start 가 1,000 까지라 100건씩 10페이지(최대 1,000건)가 한계
+MAX_PAGES = 10
 
 
 def is_spam(text: str) -> bool:
@@ -74,6 +76,7 @@ def fetch(session, source: str, query: str, start: int = 1, display: int = 100) 
 def collect(session, source: str, term: str, must: tuple[str, ...], since: date, pages: int = 2) -> list[dict]:
     """'{term} 주가', '{term} 주식' 최신순. 제목·요약에 종목명이 있고 광고가 아닌 글만, since 이후."""
     by_url: dict[str, dict] = {}
+    pages = max(1, min(pages, MAX_PAGES))
     for suf in QUERY_SUFFIXES:
         for page in range(pages):
             items = fetch(session, source, f"{term} {suf}", start=1 + 100 * page)
