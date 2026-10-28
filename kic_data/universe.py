@@ -53,7 +53,47 @@ ETF_UNIVERSE = [
     ("091230", "TIGER 반도체"),
     ("381180", "TIGER 미국필라델피아반도체나스닥"),
     ("396500", "TIGER 반도체TOP10"),
+    # 10-28 추가: 시장 대표 지수·배당 ETF (에이전트 1 시장 기준선, 에이전트 3 자금 흐름 비교용)
+    ("102110", "TIGER 200"),
+    ("360750", "TIGER 미국S&P500"),
+    ("379800", "KODEX 미국S&P500"),
+    ("133690", "TIGER 미국나스닥100"),
+    ("379810", "KODEX 미국나스닥100"),
+    ("161510", "PLUS 고배당주"),
+    ("279530", "KODEX 고배당주"),
+    ("210780", "TIGER 코스피고배당"),
 ]
+
+# 해외 상장 ETF (yfinance: 비공식, 개발·연구용). 국내 상장 ETF 와 같은 core.etf_price_daily 에 market='US' 로 넣습니다.
+US_ETF_UNIVERSE = [
+    ("SPY", "SPDR S&P 500 ETF Trust"),
+    ("VOO", "Vanguard S&P 500 ETF"),
+    ("QQQ", "Invesco QQQ Trust (Nasdaq-100)"),
+]
+
+# ETF 분류. category 는 에이전트가 '같은 지수를 따르는 ETF' 를 묶을 때 씁니다.
+# keyword 는 원천 API 가 돌려준 종목명에 들어 있어야 하는 말입니다 (종목코드 오기·종목명 변경 감지용).
+ETF_CATEGORY = {
+    "069500": ("kospi200", "200"), "102110": ("kospi200", "200"),
+    "360750": ("sp500", "S&P500"), "379800": ("sp500", "S&P500"), "SPY": ("sp500", None), "VOO": ("sp500", None),
+    "133690": ("nasdaq100", "나스닥100"), "379810": ("nasdaq100", "나스닥100"), "QQQ": ("nasdaq100", None),
+    "161510": ("kr_high_dividend", "고배당"), "279530": ("kr_high_dividend", "고배당"), "210780": ("kr_high_dividend", "고배당"),
+    "091160": ("semiconductor", "반도체"), "091230": ("semiconductor", "반도체"),
+    "381180": ("semiconductor", "반도체"), "396500": ("semiconductor", "반도체"),
+}
+CATEGORY_LABEL = {
+    "kospi200": "코스피200", "sp500": "미국 S&P500", "nasdaq100": "나스닥100",
+    "kr_high_dividend": "국내 고배당", "semiconductor": "반도체",
+}
+
+
+def etf_name_mismatch(ticker: str, api_name: str | None) -> bool:
+    """원천 API 종목명이 기대한 말을 포함하지 않으면 True (종목코드가 잘못 적혔을 가능성)."""
+    keyword = ETF_CATEGORY.get(ticker, (None, None))[1]
+    if not keyword or not api_name:
+        return False
+    norm = lambda x: x.replace(" ", "").upper()
+    return norm(keyword) not in norm(api_name)
 
 # 시범 업종: 기준 종목마다 같은 업종의 나머지 종목을 비교군으로 묶습니다.
 PEER_THEMES = {

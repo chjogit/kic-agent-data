@@ -27,7 +27,8 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 데이터 | 제공 기관 · API | 적재 테이블 |
 |---|---|---|
 | 국내 주식 일별 시세, 발행주식수 | 금융위원회 주식시세정보 (공공데이터포털 `GetStockSecuritiesInfoService_V2`) | `core.price_daily`, `core.company` |
-| 국내 ETF 시세·NAV | 금융위원회 증권상품시세정보 (공공데이터포털 `GetSecuritiesProductInfoService`) | `core.etf_price_daily` |
+| 국내 ETF 시세·NAV | 금융위원회 증권상품시세정보 (공공데이터포털 `GetSecuritiesProductInfoService`). 코스피200·미국 S&P500·나스닥100·국내 고배당·반도체 13종, 처음 보는 ETF 는 5년치 | `core.etf_price_daily`, 분류 `core.etf_info` |
+| 해외 ETF 시세 | yfinance (비공식): SPY·VOO·QQQ. NAV 없음, `market='US'`·`currency='USD'` | `core.etf_price_daily` |
 | 해외 주식 시세, 시장 지수 | Yahoo Finance (`yfinance`, 비공식 라이브러리 · 개발·연구용) | `core.price_daily`, `core.market_index_daily` |
 | 국내 재무제표·공시·기업개황 | 금융감독원 OpenDART (`corpCode`, `company`, `fnlttSinglAcntAll`, `list`) | `core.financial_fact`, `core.disclosure`, `core.company` |
 | 국내 차입 조건 (회사채·CP·단기사채 미상환 잔액 만기 구간, 채무증권 발행 이자율·만기·신용등급), 매출채권 | OpenDART 정기보고서 주요정보 (`cprndNrdmpBlce`, `entrprsBilScritsNrdmpBlce`, `srtpdPsndbtNrdmpBlce`, `detScritsIsuAcmslt`) + `fnlttSinglAcntAll` | `core.debt_balance`, `core.debt_issue`, `core.financial_fact` (`dart_full`), 뷰 `core.v_debt_maturity`·`core.v_dso` |
