@@ -23,6 +23,7 @@ from typing import Callable
 from . import db, quality
 
 HOUR = timedelta(hours=1)
+EVERY_RUN = timedelta(0)  # 매 tick 실행 (기본값 HOUR 면 1시간 안의 두 번째 실행에서 건너뜀 → 새 sql 열 없이 수집이 돌아 실패)
 DAY = timedelta(days=1)
 WEEK = timedelta(days=7)
 SIX_HOURS = timedelta(hours=6)
@@ -84,7 +85,7 @@ NEWS_KEYS = ("NCP_APIHUB_KEY_ID", "NAVER_CLIENT_ID")
 # 조회로 몇 번만 부르고, 종목마다 불러야 하는 네이버 뉴스·블로그·카페·언급량·검색 관심도는 하루 한도 때문에 6시간마다.
 JOBS: list[Job] = [
     # 준비
-    Job("apply-schema", "DB 스키마 적용", "cmd_apply_schema", needs=DB, group="준비"),  # 매 실행 (몇 초, 새 sql 파일이 바로 반영되게)
+    Job("apply-schema", "DB 스키마 적용", "cmd_apply_schema", every=EVERY_RUN, needs=DB, group="준비"),  # 매 실행 (몇 초, 새 sql 파일이 바로 반영되게)
     Job("seed-companies", "종목 등록 (universe.py)", "cmd_seed", every=DAY, needs=DB, group="준비"),
     Job("sync-kospi200", "KOSPI 200 종목 마스터", "cmd_sync_kospi200", every=DAY, needs=DB, group="준비"),
     Job("sync-dart-codes", "DART 고유번호 연결", "cmd_sync_dart", every=DAY, needs=DB + ("DART_API_KEY",), group="준비"),
