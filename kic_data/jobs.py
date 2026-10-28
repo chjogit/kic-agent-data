@@ -106,6 +106,11 @@ JOBS: list[Job] = [
     Job("backfill-community", "블로그·카페 30일", "cmd_community",
         {"days": 30, "sources": "naver_blog,naver_cafe", "pages": 2}, every=ONCE,
         needs=DB + NAVER, split=("KR", "US"), chunk=10, group="과거분(1회)"),
+    Job("backfill-blog-deep", "블로그 30일 깊게(검색어당 최대 1,000건)", "cmd_community",
+        {"days": 30, "sources": "naver_blog", "pages": 10}, every=ONCE,
+        needs=DB + NAVER, split=("KR", "US"), chunk=10, group="과거분(1회)"),
+    # ↑ backfill-community(2페이지)는 글이 많은 대형주에서 며칠치뿐이라 감성 변화의 직전 기간(8~30일 전)이 비었음.
+    #   블로그만 작성일이 있어 깊게 받음 (카페는 날짜가 없어 과거분이 의미 없음). 30일보다 오래된 페이지에 닿으면 멈춤
     Job("backfill-trends", "검색 관심도 1년", "cmd_trends", {"days": 365}, every=ONCE, needs=DB,
         needs_any=NEWS_KEYS, group="과거분(1회)"),
     Job("backfill-customs", "관세청 반도체 수출입 5년", "cmd_customs", {"from_ym": _ym_ago(60), "hs": HS_SEMI}, every=ONCE,
@@ -165,6 +170,7 @@ JOBS: list[Job] = [
 ]
 # 새 종목이 들어오면 다시 해야 하는 과거분 (종목마다 받는 것)
 PER_TICKER_BACKFILLS = ("backfill-kr-prices", "backfill-disclosures", "backfill-news", "backfill-community",
+                        "backfill-blog-deep",
                         "backfill-trends", "backfill-investor-flows", "backfill-dart-annual", "backfill-dart-quarterly")
 # 종목 마스터가 바뀌면 과거분보다 먼저 다시 돌려야 하는 준비 작업 (DART 고유번호·업종이 있어야 재무·공시·Peer 를 만듦)
 PREP_JOBS = ("sync-dart-codes", "company-info")
