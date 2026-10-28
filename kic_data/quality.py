@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 # 작업 이름 → 원천 API. 내부 계산(스키마 적용·감성·TTM·지표 재계산 등)은 외부 API 가 아니라 빠집니다.
 API_OF_JOB = {
     "sync-dart-codes": "dart", "company-info": "dart", "backfill-disclosures": "dart", "disclosures": "dart",
-    "backfill-dart-annual": "dart", "backfill-dart-quarterly": "dart", "dart-annual": "dart", "dart-quarterly": "dart",
+    "backfill-dart-annual": "dart", "backfill-dart-quarterly": "dart", "backfill-dart-quarterly-5y": "dart", "dart-annual": "dart", "dart-quarterly": "dart",
     "report-exposure": "dart", "debt-terms": "dart",
     "sec-annual": "sec", "sec-quarterly": "sec",
     "backfill-kr-prices": "fsc", "kr-prices": "fsc", "backfill-etf": "fsc", "etf-prices": "fsc",
