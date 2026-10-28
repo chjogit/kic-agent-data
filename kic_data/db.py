@@ -577,6 +577,28 @@ def upsert_facts(conn, company_id: int, rows: list[dict], source: str) -> int:
     return len(params)
 
 
+MULTI_API = "multi"  # ops.dart_periodic_fetch.api 값: DART 다중회사 주요계정(fnlttMultiAcnt)
+
+
+def mark_multi_fetched(conn, fiscal_year: int, report_code: str, status: dict[int, int]) -> None:
+    """다중회사 주요계정으로 한 번 요청한 회사들을 기록합니다 (자료 없음 포함). status: {company_id: 받은 행 수}."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO ops.dart_periodic_fetch (company_id, api, fiscal_year, reprt_code, status, n_rows) "
+            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (company_id, api, fiscal_year, reprt_code) DO UPDATE SET "
+            "status = EXCLUDED.status, n_rows = EXCLUDED.n_rows, fetched_at = now()",
+            [[cid, MULTI_API, fiscal_year, report_code, "ok" if n else "no_data", n] for cid, n in status.items()])
+    conn.commit()
+
+
+def multi_fetched(conn, fiscal_year: int, report_code: str) -> set[int]:
+    """이 연도·보고서를 다중회사 주요계정으로 이미 요청한 회사 id (자료 없음 포함)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT company_id FROM ops.dart_periodic_fetch WHERE api = %s AND fiscal_year = %s "
+                    "AND reprt_code = %s", [MULTI_API, fiscal_year, report_code])
+        return {r[0] for r in cur.fetchall()}
+
+
 def fact_companies(conn, fiscal_year: int, report_code: str, source: str) -> set[int]:
     """이 연도·보고서의 재무 행이 이미 있는 회사 id."""
     with conn.cursor() as cur:

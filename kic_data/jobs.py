@@ -124,6 +124,11 @@ JOBS: list[Job] = [
         {"from_year": _years_ago(5), "reports": "11011", "max_seconds": 300}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
     Job("backfill-dart-quarterly", "국내 분기 재무 2년(다중회사)", "cmd_dart_multi",
         {"from_year": _years_ago(2), "reports": Q_REPORTS, "max_seconds": 300}, every=ONCE, needs=DB + ("DART_API_KEY",), group="과거분(1회)"),
+    # 10-28: 에이전트 1 제작 기준(P01) 의 분기 매출 기준선·순차평가에 독립 분기가 4개뿐이라 5년으로 늘림.
+    # 이미 받은 연도·보고서(묶음의 90% 이상)는 건너뛰고, 300초마다 끊어 다음 실행에서 이어 받음.
+    Job("backfill-dart-quarterly-5y", "국내 분기 재무 5년(다중회사)", "cmd_dart_multi",
+        {"from_year": _years_ago(5), "reports": Q_REPORTS, "max_seconds": 300}, every=ONCE, needs=DB + ("DART_API_KEY",),
+        group="과거분(1회)"),
     # 매시간: 전 종목/시장 전체 조회라 종목 수와 거의 무관
     Job("kr-prices", "국내 시세(전 종목 조회)", "cmd_kr_prices", {"days": 10}, needs=DB + ("FSC_API_KEY",)),
     Job("us-prices", "해외 시세", "cmd_us_prices", {"days": 10}, needs=DB, split=("US",), chunk=10),
