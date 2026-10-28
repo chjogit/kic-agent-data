@@ -421,6 +421,8 @@ def test_dart_multi_skips_covered_and_stops_on_budget(monkeypatch):
     monkeypatch.setattr(cli.db, "list_companies", lambda conn, m: companies)
     monkeypatch.setattr(cli.db, "fact_companies", lambda conn, y, code, src: set(range(1, 101)))  # 첫 묶음은 이미 있음
     monkeypatch.setattr(cli.db, "upsert_facts", lambda conn, cid, rows, src: len(rows))
+    monkeypatch.setattr(cli.db, "mark_multi_fetched", lambda conn, y, code, status: None)
+    monkeypatch.setattr(cli.db, "multi_fetched", lambda conn, y, code: set())
     monkeypatch.setattr(cli, "make_session", lambda: None)
 
     def fetch(s, chunk, year, code):

@@ -567,6 +567,10 @@ def cmd_dart_multi(args) -> int:
                     print(f"[SKIP] {year} {code} 제출 기한 전")
                     continue
                 have = db.fact_companies(conn, year, code, "dart")
+                if year <= date.today().year - 2:
+                    # 지난 연도는 '요청했지만 자료 없음'(상장 전·보고서 없음)도 받은 것으로 봄. 안 그러면 그런 회사가 10% 넘는
+                    # 묶음을 실행마다 다시 받느라 시간 예산을 다 써서 과거분이 끝나지 않음. 최근 연도는 늦은 제출을 위해 다시 받음
+                    have |= db.multi_fetched(conn, year, code)
                 n = got = skipped = 0
                 for i in range(0, len(companies), dart.MULTI_MAX):
                     part = companies[i:i + dart.MULTI_MAX]
@@ -583,12 +587,15 @@ def cmd_dart_multi(args) -> int:
                         _fail(f"{year} {code}", str(exc))
                         bad += 1
                         continue
+                    status = {c[0]: 0 for c in part}
                     for key, rows in result.items():
                         cid = by_key.get(key)
                         if cid is None:
                             continue
                         got += 1
                         n += db.upsert_facts(conn, cid, rows, "dart")
+                        status[cid] = len(rows)
+                    db.mark_multi_fetched(conn, year, code, status)
                 _ok(f"{year} {code}", f"{got}/{len(companies)}개사 {n}행" + (f" (이미 있음 {skipped}개사 건너뜀)" if skipped else ""))
     return 1 if bad else 0
 
