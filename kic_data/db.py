@@ -607,13 +607,15 @@ def upsert_macro(conn, series_id: str, name: str, source: str, frequency: str, r
     return len(rows)
 
 
-def update_company_info(conn, company_id: int, sector=None, sector_desc=None, shares=None, shares_asof=None) -> None:
+def update_company_info(conn, company_id: int, sector=None, sector_desc=None, shares=None, shares_asof=None,
+                        legal_name=None) -> None:
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE core.company SET sector = COALESCE(%s, sector), sector_desc = COALESCE(%s, sector_desc), "
-            "shares_outstanding = COALESCE(%s, shares_outstanding), shares_asof = COALESCE(%s, shares_asof) "
+            "shares_outstanding = COALESCE(%s, shares_outstanding), shares_asof = COALESCE(%s, shares_asof), "
+            "legal_name = COALESCE(%s, legal_name) "
             "WHERE company_id = %s",
-            [sector or None, sector_desc or None, shares, shares_asof, company_id],
+            [sector or None, sector_desc or None, shares, shares_asof, legal_name or None, company_id],
         )
     conn.commit()
 

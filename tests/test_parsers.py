@@ -93,6 +93,9 @@ class SecTest(unittest.TestCase):
 class ExtraTest(unittest.TestCase):
     def test_dart_company(self):
         self.assertEqual(dart.parse_company({"status": "000", "induty_code": "264"})["induty_code"], "264")
+        got = dart.parse_company({"status": "000", "induty_code": "582", "corp_name": " 네이버(주) "})
+        self.assertEqual(got["corp_name"], "네이버(주)")          # 정식 회사명 (core.company.legal_name)
+        self.assertIsNone(dart.parse_company({"status": "000", "corp_name": ""})["corp_name"])
         with self.assertRaises(RuntimeError):
             dart.parse_company({"status": "010"})
 
@@ -219,3 +222,32 @@ class FeatureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegalNameTest(unittest.TestCase):
+    def test_update_company_info_keeps_legal_name_when_missing(self):
+        from kic_data import db
+
+        class Cur:
+            def __init__(self, log): self.log = log
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, params=None): self.log.append((sql, params))
+
+        class Conn:
+            def __init__(self): self.log = []
+            def cursor(self): return Cur(self.log)
+            def commit(self): pass
+
+        conn = Conn()
+        db.update_company_info(conn, 7, sector="582", legal_name="네이버(주)")
+        db.update_company_info(conn, 7, sector="582", legal_name="")
+        (sql1, p1), (_, p2) = conn.log
+        self.assertIn("legal_name = COALESCE(%s, legal_name)", sql1)
+        self.assertEqual(p1[-2:], ["네이버(주)", 7])
+        self.assertEqual(p2[-2:], [None, 7])                       # 빈 값이면 기존 이름 유지
+
+    def test_schema_adds_legal_name(self):
+        from pathlib import Path
+        sql = (Path(__file__).resolve().parents[1] / "sql" / "020_company_legal_name.sql").read_text(encoding="utf-8")
+        self.assertIn("ADD COLUMN IF NOT EXISTS legal_name text", sql)

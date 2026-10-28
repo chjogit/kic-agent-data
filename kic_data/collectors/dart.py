@@ -153,14 +153,14 @@ def fetch_multi(session, corp_codes: list[str], year: int, report_code: str = RE
 
 
 def parse_company(payload: dict) -> dict:
-    """기업개황 → 업종코드(KSIC) 등."""
+    """기업개황 → 업종코드(KSIC), 정식 회사명 등."""
     status = payload.get("status")
     if status != "000":
         raise RuntimeError(f"[dart] {status} {STATUS.get(status, payload.get('message', ''))}")
     return {
         "induty_code": (payload.get("induty_code") or "").strip(),
         "corp_cls": payload.get("corp_cls"),
-        "corp_name": payload.get("corp_name"),
+        "corp_name": (payload.get("corp_name") or "").strip() or None,
     }
 
 
