@@ -501,3 +501,35 @@ def test_apply_schema_skips_locked_file_instead_of_waiting(tmp_path, monkeypatch
     assert "SET LOCAL lock_timeout = '5s'" in sent
     with pytest.raises(psycopg.errors.LockNotAvailable):  # busy 를 안 넘기면(처음 적용) 그대로 실패
         db.apply_schema(conn, lock_timeout="5s")
+
+
+def test_after_kst_runs_once_per_day_after_close():
+    """투자자별 수급: 한국시간 18:30 이후 하루 한 번 (장 마감 뒤 확정 자료)."""
+    from datetime import time as dtime
+
+    job = jobs.Job("f", "f", "cmd_x", every=jobs.DAY, after_kst=dtime(18, 30))
+    kst = jobs.KST
+    morning = datetime(2026, 10, 28, 10, 0, tzinfo=kst)
+    evening = datetime(2026, 10, 28, 18, 45, tzinfo=kst)
+    # 전날 저녁에 끝났으면 오늘 오전에는 돌지 않음 (예전 '24시간 뒤' 규칙이면 오전에 돌아 그날 수급을 놓침)
+    done_last_night = {"last_complete": datetime(2026, 10, 27, 19, 0, tzinfo=kst)}
+    assert jobs.due_reason(job, done_last_night, morning, []) is None
+    assert jobs.due_reason(job, done_last_night, evening, []) == "기준 시각 이후"
+    # 오늘 18:30 이후 이미 끝났으면 다시 돌지 않음
+    done_tonight = {"last_complete": datetime(2026, 10, 28, 19, 0, tzinfo=kst)}
+    assert jobs.due_reason(job, done_tonight, datetime(2026, 10, 28, 23, 0, tzinfo=kst), []) is None
+    # 오늘 오전에 끝난 것은 오늘 몫이 아님 → 18:30 이후 다시
+    done_morning = {"last_complete": datetime(2026, 10, 28, 9, 0, tzinfo=kst)}
+    assert jobs.due_reason(job, done_morning, morning, []) is None
+    assert jobs.due_reason(job, done_morning, evening, []) == "기준 시각 이후"
+    # 처음·이어서는 그대로
+    assert jobs.due_reason(job, None, morning, []) == "처음"
+    assert jobs.due_reason(job, {"cursor": 50, "last_complete": done_last_night["last_complete"]}, morning, []) == "이어서"
+    # 다음 예정: 완료 다음 18:30
+    assert jobs.next_due(job, done_tonight) == datetime(2026, 10, 29, 18, 30, tzinfo=kst)
+    assert jobs.next_due(job, done_morning) == datetime(2026, 10, 28, 18, 30, tzinfo=kst)
+
+
+def test_investor_flows_job_is_after_close():
+    job = next(j for j in jobs.JOBS if j.name == "investor-flows")
+    assert job.after_kst is not None and (job.after_kst.hour, job.after_kst.minute) >= (18, 0)
