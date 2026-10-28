@@ -11,7 +11,7 @@
 name: kic-collect
 on:
   schedule:
-    - cron: "7 * * * *"   # 매시 7분 (공개 저장소라 Actions 시간 무제한)
+    - cron: "7 * * * *"   # 매시 7분, 비상용 (정시 실행은 ops/cloudflare-trigger 가 매시 15분에 workflow_dispatch)
   workflow_dispatch:
     inputs:
       only:

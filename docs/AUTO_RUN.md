@@ -6,6 +6,8 @@ GitHub 저장소에 코드를 올려 두면 GitHub 가 매시간 수집을 대�
 ## 1. 동작 방식
 
 - `.github/workflows/collect.yml` 이 매시 7분(UTC 기준) `python -m kic_data.cli tick` 을 실행합니다.
+  GitHub 예약 실행은 보통 20~40분 늦게 시작해서, `ops/cloudflare-trigger/` 의 Cloudflare Worker 가 매시 15분에
+  같은 워크플로를 실행 요청합니다(보통 1분 안에 시작). 7분 예약은 Worker 가 빠질 때를 대비한 비상용입니다.
 - `tick` 은 `kic_data/jobs.py` 의 시간표에서 **차례가 된 작업만** 실행합니다 (한 번 실행에 최대 20분, 남은 것은 다음 실행으로).
 - 원천 API 별로 줄(lane)을 나눠 병렬로 실행합니다: 준비 → `dart`(DART·SEC) · `public`(공공데이터포털) · `naver`(검색 API) · `naver_etc`(데이터랩·네이버 증권) · `global`(yfinance·ECOS·FRED·Finnhub·유튜브) 동시 → 계산(감성·TTM·Peer·지표). 같은 API 는 한 줄에만 있어 동시 호출이 늘지 않고, 20분 예산은 줄마다 따로 적용됩니다. 한 줄만 돌리려면 `python -m kic_data.cli tick --lane dart`.
 - 대상: **KOSPI 200 전 종목**(매일 네이버 증권 공개 목록으로 동기화, `index_tags` 에 `KOSPI200`) + `universe.py` 의 반도체 비교군·해외 종목.
