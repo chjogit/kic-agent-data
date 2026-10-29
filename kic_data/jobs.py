@@ -164,9 +164,9 @@ JOBS: list[Job] = [
     Job("mentions", "언급량 스냅샷", "cmd_pulse", {"tickers": None, "max_age": 0, "market_hours": False},
         every=SIX_HOURS, needs=DB + NAVER, split=("KR", "US"), chunk=25),
     # 재무: 국내는 다중회사 주요계정(100개사씩)이라 몇 번의 호출로 끝남
-    Job("debt-terms", "차입 조건(사채·CP 만기·이자율)·매출채권", "cmd_debt_terms", {"apis": None, "force": False},
+    Job("debt-terms", "차입 조건(사채·CP 만기·이자율)·매출채권·총차입금", "cmd_debt_terms", {"apis": None, "force": False},
         every=DAY, needs=DB + ("DART_API_KEY",), split=("KR",), chunk=10, group="재무"),
-    # ↑ 회사당 보고서 1~2개 × API 5개. 이미 받은 보고서는 건너뛰어 새 정기보고서가 나올 때만 호출
+    # ↑ 회사당 보고서 1~2개 × API 5개(매출채권·총차입금은 같은 응답 1회). 이미 받은 보고서는 건너뛰어 새 정기보고서가 나올 때만 호출
     Job("report-exposure", "사업보고서 원문 노출(환율·이자율 민감도·수출 비중)", "cmd_report_exposure", {"force": False},
         every=DAY, needs=DB + ("DART_API_KEY",), split=("KR",), chunk=8, group="재무"),
     # ↑ 회사마다 원문 zip(약 10MB) 1개. 이미 읽은 접수번호는 건너뛰어 평소에는 거의 호출 없음

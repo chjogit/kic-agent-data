@@ -141,6 +141,54 @@ def pick_receivable(rows: list[dict]) -> dict | None:
     return None
 
 
+# 재무상태표 차입 계정(총차입금 용). 이름에서 공백을 빼고 맞춥니다. 리스부채는 넣지 않습니다.
+BORROW_RE = re.compile(r"차입금|차입부채|사채")
+BORROW_NOT_RE = re.compile(r"할인|할증|상환|증가|감소|발행차금|미지급|평가|손익|손실|이익|조정|파생|전환권|교환권|"
+                           r"신주인수권|대여|채권|예수|투자|자산(?!유동화)")
+
+
+ASSET_ID_RE = re.compile(r"Receivable|Investment|Asset", re.I)
+
+
+def borrow_kind(account_nm: str) -> str | None:
+    """차입 계정 구분: short(단기) · current_lt(유동성 장기) · long(장기) · bond(사채) · bank(금융업 차입부채) ·
+    mixed(차입금·사채 합본, 유동/비유동 모름). 차입 계정이 아니면 None."""
+    nm = (account_nm or "").replace(" ", "")
+    if not BORROW_RE.search(nm) or BORROW_NOT_RE.search(nm):
+        return None
+    if "차입부채" in nm:
+        return "bank"
+    if nm.startswith("유동성") or (nm.startswith("유동") and "장기" in nm) or "유동성대체" in nm \
+            or ("유동성부분" in nm and "비유동성부분" not in nm):
+        return "current_lt"
+    if nm.startswith(("단기", "유동")):
+        return "short"
+    if "차입금" not in nm:
+        return "bond"
+    if nm.startswith(("장기", "비유동")):
+        return "long"
+    return "mixed"
+
+
+def pick_borrowings(rows: list[dict]) -> list[dict]:
+    """전체 재무제표에서 재무상태표 차입 계정 행들(총차입금 = 합). 한 응답(연결 또는 별도)만 넘깁니다.
+    응답 행 순서는 자산·부채 순이 아니라서(자본총계 뒤에 부채가 오기도 함) 순서로 쪽을 가르지 않고,
+    계정 ID·이름에 자산 표시(Receivable·Investment·Asset, '투자'·'자산')가 있으면 뺍니다.
+    한국전력·셀트리온처럼 차입금을 '기타 금융부채'에 합쳐 적는 회사는 행이 없으므로 총차입금은 미확인으로 남습니다."""
+    bs = [r for r in rows if r.get("sj_div") == "BS" and not ASSET_ID_RE.search(r.get("account_id") or "")]
+    out, seen = [], set()
+    for r in bs:
+        if r.get("sj_div") != "BS" or r.get("amount") is None or not borrow_kind(r.get("account_nm")):
+            continue
+        nm, n = r.get("account_nm") or "", 1
+        while (r.get("account_id") or "", nm) in seen:  # 같은 ID·이름이 두 번(유동·비유동) 나오면 순번을 붙여 둘 다 남김
+            n += 1
+            nm = f"{r.get('account_nm')}#{n}"
+        seen.add((r.get("account_id") or "", nm))
+        out.append({**r, "account_nm": nm})
+    return out
+
+
 def _params(corp_code: str, year: int, reprt_code: str) -> dict:
     return {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
             "bsns_year": str(year), "reprt_code": reprt_code}

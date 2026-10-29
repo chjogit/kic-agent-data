@@ -212,3 +212,68 @@ def test_hedge_accounting_negation_is_not_flagged():
            unit_table="(단위: 백만원)")
     res = ep.extract({"a.xml": x})
     assert "fx_derivative" in res["found"] and "fx_hedge_acct" not in res["found"]
+
+
+# ---- v3 (10-29): 원문 절을 못 찾던 회사들의 표 모양 (한전KPS·강원랜드·삼성SDS 2025 사업보고서)
+
+def test_v3_net_income_row_with_increase_decrease_label():   # 한전KPS '5. 위험관리 및 파생거래'
+    x = _t([["구 분", "당 기", "당 기", "전 기", "전 기"], ["구 분", "10% 증가", "10% 감소", "10% 증가", "10% 감소"],
+            ["순이익 증가(감소)", "5,574", "-5,574", "4,230", "-4,230"], ["자본의 증가(감소)", "5,574", "-5,574", "4,230", "-4,230"]],
+           before="보고기간말 현재 각 외화에 대한 원화환율이 10% 변동 시 환율변동이 순이익 및 자본에 미치는 영향은 다음과 같습니다.",
+           unit_table="(단위: 백만원)")
+    m = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
+    assert len(m) == 1 and m[0].currency == "ALL" and m[0].value == 5_574e6 and m[0].change_pct == 10
+    assert m[0].basis == "당기손익"
+
+
+def test_v3_xbrl_rate_row_and_two_row_unit_table():   # 한전KPS 연결 주석 '34. 위험관리' (표준 주석)
+    unit = "<TABLE><TR><TD>외화환율변동의 민감도분석에 대한 공시</TD></TR><TR><TD>당기</TD><TD>(단위 : 원)</TD></TR></TABLE>"
+    x = unit + _t([["", "위험"], ["", "시장위험"], ["", "환위험"],
+                   ["외화환율변동의 합리적인 범위 내에서의 발생가능한 0.1 증가율", "0.1"],
+                   ["법인세비용차감전순손익 증가(감소)", "5,574,487,337"],
+                   ["외화환율증가에 따른 자본의 증가(감소)", "5,574,487,337"]])
+    t = dart_doc.tables_from_xml(x)
+    assert len(t) == 1 and t[0].unit == "원"
+    m = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
+    assert len(m) == 1 and m[0].value == 5_574_487_337 and m[0].change_pct == 10 and m[0].basis == "세전이익"
+
+
+def test_v3_ir_table_mentioning_other_variables_like_fx():   # 강원랜드 연결감사보고서 주석
+    x = _t([["구 분", "당기", "당기", "전기", "전기"], ["구 분", "100bp 상승", "100bp 하락", "100bp 상승", "100bp 하락"],
+            ["법인세차감전순손익", "(65,000,000)", "65,000,000", "(65,000,000)", "65,000,000"]],
+           before="② 이자율위험 관리 연결기업은 변동이자율로 자금을 차입하고 있습니다. 당기말 현재 이자율이 100베이시스포인트 "
+                  "변동한다면, 손익은 증가 또는 감소하였을 것입니다. 이 분석은 환율과 같은 다른 변수는 변동하지 않는다고 가정하였으며",
+           unit_table="(단위: 원)")
+    m = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "ir_sens"]
+    assert len(m) == 1 and m[0].value == -65_000_000 and m[0].change_pct == 1.0
+
+
+def test_v3_fx_risk_narrative_from_xbrl_description_table():   # 삼성SDS '32. 재무위험관리'
+    desc = "연결실체는 글로벌 영업활동을 수행함에 따라 외화 수입, 지출이 발생하고 있으며 이로 인해 환포지션이 발생합니다. 주된 통화는 USD, EUR 입니다."
+    x = ("<TITLE>32. 재무위험관리 (연결)</TITLE>"
+         + _t([["", "위험", "위험", "위험"], ["", "시장위험", "시장위험", "신용위험"], ["", "환율변동위험", "이자율위험", "신용위험"],
+               ["위험에 대한 노출정도에 대한 기술", desc, "변동금리 차입금은 없습니다. 이자율 위험은 제한적입니다 추가 설명입니다", "신용위험 설명"]]))
+    res = ep.extract({"a.xml": x})
+    assert res["risk_text"] == desc and "risk_text" in res["found"]
+
+
+def test_v3_fx_risk_body_fallback_and_title_only_skipped():
+    body = ("<P>손상검사에서 환 위험은 사용가치에 영향을 미칠 수 있습니다. 이 문장은 위험관리 절 밖이라 잡지 않아야 합니다. "
+            "기후 관련 가정과 배출 비용 증가, 수요 변화 등을 함께 고려하였습니다.</P>"
+            "<P>5. 위험관리 및 파생거래</P><P>나. 환위험 관리</P><P>환위험은 외화로 표시된 거래에서 발생합니다. 회사는 국내 영업 비중이 높아 외화 거래가 적고, "
+            "외화 예금과 외화 매출채권 규모가 크지 않아 환율 변동의 영향은 제한적입니다. 필요시 통화선도 계약을 검토합니다.</P>")
+    res = ep.extract({"a.xml": body})
+    assert res["risk_text"].startswith("환위험 관리") and "제한적" in res["risk_text"]
+    assert ep.extract({"a.xml": "<P>환위험 관리</P>"})["risk_text"] == ""
+
+
+def test_v3_relaxed_rules_do_not_change_tables_v2_already_found():
+    """v3 넓힌 규칙은 v2 규칙으로 한 표도 못 찾을 때만: 사업의 내용 표(v2)와 연결 주석 XBRL 표(v3 전용)가 함께 있으면 v2 표."""
+    v2 = _t([["구 분", "10% 상승시", "10% 하락시"], ["USD", "100", "(100)"]],
+            before="환율이 10% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    unit = "<TABLE><TR><TD>외화환율변동의 민감도분석에 대한 공시</TD></TR><TR><TD>당기</TD><TD>(단위 : 원)</TD></TR></TABLE>"
+    xbrl = "<TITLE>34. 위험관리 (연결)</TITLE>" + unit + _t(
+        [["", "환위험"], ["외화환율변동의 합리적인 범위 내에서의 발생가능한 0.1 증가율", "0.1"],
+         ["법인세비용차감전순손익 증가(감소)", "999,000,000"]])
+    m = [k for k in ep.extract({"a.xml": "<TITLE>위험관리 및 파생거래</TITLE>" + v2 + xbrl})["metrics"] if k.metric == "fx_sens"]
+    assert [(k.currency, k.value) for k in m] == [("USD", 100e6)]

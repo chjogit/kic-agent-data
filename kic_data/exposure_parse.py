@@ -30,7 +30,9 @@ UNIT_KRW = {"원": 1, "천원": 1e3, "백만원": 1e6, "십억원": 1e9, "억원
 NUM_RE = re.compile(r"^[△▲(\-−]?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?$")
 PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:p\s*)?(?:변동|상승|하락|증가|감소|절상|절하|강세|약세|만큼)")
 TOTAL_WORDS = ("합계", "총계", "소계", "계", "합 계", "총 계", "연결기준합계", "연결합계")
-PARSER_VERSION = "v2"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
+PARSER_VERSION = "v3"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
+# v3 (10-29): 표준 주석(XBRL) 표 모양('0.1 증가율', 단위 표 2행), '순이익 증가(감소)' 행, 이자율 표의 '환율과 같은 다른 변수' 문구,
+#             환율 민감도 표가 없을 때 위험관리 서술 표·본문에서 환위험 문단 발췌
 FX_DERIV_RE = re.compile(r"통화\s*선도|통화\s*스왑|통화\s*옵션|통화\s*이자율\s*스왑|선물환|외환\s*파생|NDF")
 
 
@@ -89,7 +91,7 @@ def _blob(t: Table, rows: int = 4) -> str:
 def _basis(text: str) -> str | None:
     if re.search(r"법인세\s*(비용)?\s*차감\s*전|세전", text):
         return "세전이익"
-    if re.search(r"세후|당기\s*순\s*(이익|손익)|당기\s*손익", text):
+    if re.search(r"세후|당기\s*순\s*(이익|손익)|당기\s*손익|순\s*(이익|손익)", text):
         return "당기손익"
     if "자본" in text:
         return "자본"
@@ -109,6 +111,18 @@ def _evidence(t: Table) -> str:
 
 PRIOR_RE = re.compile(r"^전\s*기|^전기말|^전\s*년")
 TOTAL_ROW_RE = re.compile(r"법인세\s*(비용)?\s*차감\s*전|세전\s*(순)?\s*(이익|손익)|당기\s*(순)?\s*(이익|손익)")
+TOTAL_ROW_RE3 = re.compile(TOTAL_ROW_RE.pattern + r"|^순\s*(이익|손익)")   # v3 넓힘 (v2 규칙으로 못 찾을 때만)
+RATE_ROW_RE = re.compile(r"증가율|상승률|변동률|변동폭")   # 표준 주석 표: '… 발생가능한 0.1 증가율 | 0.1'
+
+
+def _rate_pct(t: Table) -> float | None:
+    """표준 주석(XBRL) 표의 변동률 행 → % (0.1 → 10). 1 보다 크면 이미 % 로 봅니다."""
+    for r in t.rows:
+        if r and RATE_ROW_RE.search(r[0].replace(" ", "")):
+            vals = [v for v in (num(c) for c in r[1:]) if v is not None]
+            if vals and vals[0] > 0:
+                return round(vals[0] * 100, 4) if vals[0] < 1 else vals[0]
+    return None
 UP_RE = re.compile(r"상승|인상|절하|증가")
 
 
@@ -131,23 +145,27 @@ def _ccy_cell(r: list[str]) -> tuple[int, str] | None:
     return None
 
 
-def _is_sensitivity(t: Table) -> bool:
+def _is_sensitivity(t: Table, relaxed: bool = False) -> bool:
+    """relaxed=False 는 v2 규칙 그대로. relaxed=True(v3)는 v2 로 한 표도 못 찾은 회사에만 씁니다
+    (표준 주석 '0.1 증가율', '순이익 증가(감소)' 행). 이미 값이 있던 회사의 선택이 바뀌지 않게 두 번에 나눔."""
     b = _blob(t, 6)
-    if not ("환율" in b and re.search(r"민감|변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|인상\s*시|인하\s*시", b)
-            and _pct(b) is not None):
+    phrase = r"민감|변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|인상\s*시|인하\s*시" + (r"|합리적인\s*범위" if relaxed else "")
+    pct_ok = _pct(b) is not None or (relaxed and _rate_pct(t) is not None)
+    if not ("환율" in b and re.search(phrase, b) and pct_ok):
         return False
+    total_re = TOTAL_ROW_RE3 if relaxed else TOTAL_ROW_RE
     has_ccy = any(ccy_of(c) for r in t.rows for c in r[:2] + t.rows[0])
-    has_total = any(r and TOTAL_ROW_RE.search(r[0].replace(" ", "")) for r in t.rows)
+    has_total = any(r and total_re.search(r[0].replace(" ", "")) for r in t.rows)
     return has_ccy or has_total
 
 
-def sensitivity(t: Table) -> list[Metric]:
+def sensitivity(t: Table, relaxed: bool = False) -> list[Metric]:
     """민감도 표에서 통화별 '상승 시' 손익 영향(당기)을 원 단위로. 통화 구분이 없으면 currency='ALL'."""
     f = unit_factor(t.unit)
     if f is None:
         return []
     b = _blob(t, 6)
-    pct, basis = _pct(b), _basis(b)
+    pct, basis = _pct(b) or (_rate_pct(t) if relaxed else None), _basis(b)
     out: dict[str, float] = {}
     up = _up_col(t)
     # 배치 A: 행 = 통화(앞 두 칸 중 하나), 열 = 상승/하락 (당기 먼저). 전기 행은 건너뜀
@@ -185,7 +203,8 @@ def sensitivity(t: Table) -> list[Metric]:
     if not out:
         for r in t.rows:
             label = r[0].replace(" ", "") if r else ""
-            if not TOTAL_ROW_RE.search(label) or "하락" in label or "감소" in label:
+            total_re = TOTAL_ROW_RE3 if relaxed else TOTAL_ROW_RE
+            if not total_re.search(label) or "하락" in label or ("감소" in label and (not relaxed or "증가" not in label)):
                 continue
             v = num(r[up]) if up is not None and up < len(r) else None
             if v is None:
@@ -324,11 +343,15 @@ def _ir_change(text: str) -> float | None:
     return v / 100 if m.group(2).lower().startswith(("bp", "베이")) else v
 
 
-def _is_ir_sensitivity(t: Table) -> bool:
-    b = _blob(t, 6)
-    return ("이자율" in b or "금리" in b) and "환율" not in b \
-        and bool(re.search(r"변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|민감도|인상\s*시|인하\s*시", b)) \
-        and _ir_change(b) is not None
+OTHER_VAR_RE = re.compile(r"환율\s*(과|와|등)?\s*(같은)?\s*(다른|기타)\s*(모든\s*)?변수")  # '환율과 같은 다른 변수는 일정'
+
+
+def _is_ir_sensitivity(t: Table, relaxed: bool = False) -> bool:
+    """relaxed(v3): '환율과 같은 다른 변수' 문구를 무시하고 '변동한다면'·'100bp 상승' 표현도 받음 (v2 로 못 찾을 때만)."""
+    b = OTHER_VAR_RE.sub(" ", _blob(t, 6)) if relaxed else _blob(t, 6)
+    phrase = r"변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|민감도|인상\s*시|인하\s*시" + \
+        (r"|변동\s*한다면|\d\s*(bp|BP|bps)\s*(상승|하락)" if relaxed else "")
+    return ("이자율" in b or "금리" in b) and "환율" not in b and bool(re.search(phrase, b)) and _ir_change(b) is not None
 
 
 def ir_sensitivity(t: Table) -> list[Metric]:
@@ -401,6 +424,49 @@ def hedge_text(tables: list[Table], width: int = 500) -> str:
     return (t.context[-250:] + " " + t.text(5))[:width]
 
 
+# ---------------------------------------------------------------- 환위험 서술 (환율 민감도 표가 없을 때)
+
+FX_RISK_COL_RE = re.compile(r"환\s*위험|환율\s*변동\s*위험|외환\s*위험|환율\s*위험")
+FX_RISK_TEXT_RE = re.compile(r"(환\s*위험|환율\s*변동\s*위험|외환\s*위험)\s*(관리|에\s*대한|은|과)")
+
+
+def fx_risk_narrative(tables: list[Table], width: int = 900) -> str:
+    """표준 주석의 위험관리 서술 표('위험에 대한 노출정도에 대한 기술 | …', 열 = 환위험)에서 환위험 열 문장.
+    연결 주석 → 별도 주석 → 그 밖 순으로 처음 찾은 표. 숫자로 바꾸지 않고 근거(RAG)로만 씁니다."""
+    for t in sorted(tables, key=lambda x: (_section_rank(x), x.index)):
+        cols = {i for r in t.rows[:3] for i, c in enumerate(r) if i > 0 and FX_RISK_COL_RE.search(c)}
+        if not cols:
+            continue
+        parts = []
+        for r in t.rows:
+            if r and "기술" in r[0]:
+                for i in sorted(cols):
+                    if i < len(r) and len(re.sub(r"[^가-힣]", "", r[i])) >= 20 and r[i] not in parts:
+                        parts.append(r[i])
+        if parts:
+            return " ".join(parts)[:width]
+    return ""
+
+
+RISK_SECTION_RE = re.compile(r"위험\s*관리\s*및\s*파생\s*거래|재무\s*위험\s*관리|위험\s*관리")
+
+
+def fx_risk_body(files: dict[str, str], width: int = 600, span: int = 8000) -> str:
+    """본문(표 제외)의 '위험관리 및 파생거래'·'재무위험관리' 제목 뒤 span 자 안에서 '환위험 관리' 등 뒤 문단.
+    제목 밖(회계정책·손상검사 등)에서 '환위험'을 잡지 않게 범위를 묶고, 문장이 짧으면(제목만) 다음 것을 봅니다."""
+    from .collectors.dart_doc import TABLE_RE, clean
+
+    for text in files.values():
+        plain = clean(TABLE_RE.sub(" ", text))
+        for h in RISK_SECTION_RE.finditer(plain):
+            part = plain[h.end():h.end() + span]
+            for m in FX_RISK_TEXT_RE.finditer(part):
+                piece = part[m.start():m.start() + width].strip()
+                if len(re.sub(r"[^가-힣]", "", piece)) >= 80:
+                    return piece
+    return ""
+
+
 # ---------------------------------------------------------------- 가격변동 문단 (판가 전가력 근거)
 
 PRICE_HEAD_RE = re.compile(r"(주요\s*)?(제품|원재료|원\s*재료)\s*(등의)?\s*가격\s*변동\s*(추이|원인)|가격\s*변동\s*원인")
@@ -448,29 +514,32 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
     metrics: list[Metric] = []
     got: set[str] = set()
     risk_text = ""
-    all_tables: list[Table] = []
-    for name, text in files.items():
-        tables = tables_from_xml(text, name)
-        all_tables += tables
-        if "fx_sens" not in got:
-            cands = [(ms, t) for t in tables if _is_sensitivity(t) for ms in [sensitivity(t)] if ms]
-            if cands:
-                ms, t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
-                metrics += ms
-                got.add("fx_sens")
-                risk_text = risk_text or t.context
-        if "ir_sens" not in got:
-            cands = [(ms, t) for t in tables if _is_ir_sensitivity(t) for ms in [ir_sensitivity(t)] if ms]
-            if cands:
-                ms, _t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
-                metrics += ms
-                got.add("ir_sens")
-        if "ir_sens_liab" not in got:
-            cands = [(ms, t) for t in tables if _is_ir_sensitivity(t) for ms in [ir_liability(t)] if ms]
-            if cands:
-                ms, _t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
-                metrics += ms
-                got.add("ir_sens_liab")
+    per_file = [tables_from_xml(text, name) for name, text in files.items()]
+    all_tables: list[Table] = [t for ts in per_file for t in ts]
+
+    def first(is_ok, parse):
+        """v2 규칙으로 파일 순서대로 → 하나도 없으면 v3(넓힌) 규칙으로 같은 순서. 파일 안에서는 목차 순위·표 순서."""
+        for relaxed in (False, True):
+            for tables in per_file:
+                cands = [(ms, t) for t in tables if is_ok(t, relaxed) for ms in [parse(t, relaxed)] if ms]
+                if cands:
+                    return min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
+        return None
+
+    hit = first(_is_sensitivity, sensitivity)
+    if hit:
+        metrics += hit[0]
+        got.add("fx_sens")
+        risk_text = hit[1].context
+    hit = first(_is_ir_sensitivity, lambda t, _r: ir_sensitivity(t))
+    if hit:
+        metrics += hit[0]
+        got.add("ir_sens")
+    hit = first(lambda t, r: not r and _is_ir_sensitivity(t), lambda t, _r: ir_liability(t))   # v2 그대로
+    if hit:
+        metrics += hit[0]
+        got.add("ir_sens_liab")
+    for tables in per_file:
         for t in tables:
             if "fx_pos" not in got and _is_fx_position(t):
                 ms = fx_position(t)
@@ -494,6 +563,10 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
     hedge = hedge_text(all_tables)
     if hedge:
         got.add("hedge_text")
+    if not risk_text:   # 환율 민감도 표가 없거나 표 앞 문맥이 비었을 때 (v3)
+        risk_text = fx_risk_narrative(all_tables) or fx_risk_body(files)
+    if risk_text:
+        got.add("risk_text")
     prices = price_text(files)
     if prices:
         got.add("price_text")

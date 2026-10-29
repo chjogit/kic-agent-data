@@ -98,7 +98,8 @@ def _unit(text: str) -> str | None:
 
 
 def tables_from_xml(text: str, file: str = "") -> list[Table]:
-    """표 목록. '(단위: 백만원)'만 있는 표는 바로 다음 표에 단위·문맥을 넘기고 뺍니다."""
+    """표 목록. '(단위: 백만원)'만 있는 표(1행, 또는 표준 주석의 '…공시 / 당기 (단위 : 원)' 2행)는 바로 다음 표에
+    단위·문맥을 넘기고 뺍니다."""
     out: list[Table] = []
     last = 0
     sections = [(m.start(), clean(m.group(1))) for m in SECTION_RE.finditer(text)]
@@ -116,7 +117,8 @@ def tables_from_xml(text: str, file: str = "") -> list[Table]:
         flat = " ".join(" ".join(r) for r in rows[:2])
         unit = _unit(before[-120:] + " " + flat)
         digits = re.sub(r"[^0-9]", "", re.sub(r"\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}", "", flat))
-        if len(rows) == 1 and "단위" in flat and len(digits) < 6:
+        xbrl_head = len(rows) == 2 and "공시" in " ".join(rows[0]) and "단위" in " ".join(rows[1])  # 표준 주석 '…공시' + '당기 (단위 : 원)'
+        if (len(rows) == 1 or xbrl_head) and "단위" in flat and len(digits) < 6:
             pending = (before, unit)
             continue
         if pending:
