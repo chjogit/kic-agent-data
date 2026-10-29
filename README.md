@@ -32,6 +32,7 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 해외 주식 시세, 시장 지수 | Yahoo Finance (`yfinance`, 비공식 라이브러리 · 개발·연구용) | `core.price_daily`, `core.market_index_daily` |
 | 국내 재무제표·공시·기업개황 | 금융감독원 OpenDART (`corpCode`, `company`, `fnlttSinglAcntAll`, `list`) | `core.financial_fact`, `core.disclosure`, `core.company` |
 | 국내 차입 조건 (회사채·CP·단기사채 미상환 잔액 만기 구간, 채무증권 발행 이자율·만기·신용등급), 매출채권 | OpenDART 정기보고서 주요정보 (`cprndNrdmpBlce`, `entrprsBilScritsNrdmpBlce`, `srtpdPsndbtNrdmpBlce`, `detScritsIsuAcmslt`) + `fnlttSinglAcntAll` | `core.debt_balance`, `core.debt_issue`, `core.financial_fact` (`dart_full`), 뷰 `core.v_debt_maturity`·`core.v_dso` |
+| 국내 회사채 발행 종목 (발행금액·표면이율·고정/변동·만기, 발행사 본인 종목) | 공공데이터포털 금융위원회_채권발행정보 (`GetBondTradInfoService_V2/getIssuIssuItemStat_V2`, 법인등록번호 조회, 공공누리 2유형: 출처표시·상업적 이용금지) | `core.bond_issue_fsc`, 뷰 `core.v_bond_issue_summary`, `core.company.crno` |
 | 사업보고서 원문 노출 (환율·이자율 민감도, 외화 자산·부채, 수출 비중, 외환 파생, 가격변동 문단 발췌) | OpenDART 공시서류 원본파일 (`document.xml`), 규칙 기반 추출 | `core.report_exposure`, `rag.document` (`dart_report`) |
 | 해외 재무제표·제출서류 | 미국 SEC EDGAR (`company_tickers`, `submissions`, XBRL `companyfacts`) | `core.financial_fact`, `core.disclosure`, `core.company` |
 | 국내 거시 (기준금리·원/달러) | 한국은행 ECOS (`StatisticSearch`) | `core.macro_series`, `core.macro_obs` |
