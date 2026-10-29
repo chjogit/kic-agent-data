@@ -808,3 +808,35 @@ def read_features(conn, as_of=None) -> dict:
             d = out.setdefault((m, t), {"name": n, "as_of": str(as_of)})
             d.setdefault(p, {})[feat] = {"value": None if v is None else float(v), "unit": u, "note": note}
         return out
+
+
+# ---------- 회사채 발행 종목 (금융위원회_채권발행정보) ----------
+
+def company_crnos(conn, market: str = "KR") -> dict[int, str]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT company_id, crno FROM core.company WHERE market = %s AND crno IS NOT NULL", [market])
+        return dict(cur.fetchall())
+
+
+def set_crno(conn, company_id: int, crno: str | None) -> None:
+    if not crno:
+        return
+    with conn.cursor() as cur:
+        cur.execute("UPDATE core.company SET crno = %s WHERE company_id = %s", [crno, company_id])
+    conn.commit()
+
+
+def save_bond_issues(conn, company_id: int, rows: list[dict]) -> int:
+    """한 회사의 발행 종목을 통째로 교체 (원천이 상환·만기 종목을 빼면 여기서도 빠짐)."""
+    import json
+
+    cols = ("isin", "bond_name", "issuer", "issue_date", "maturity_date", "issue_amount", "currency", "coupon_rate",
+            "rate_type", "rate_kind", "bond_type", "bas_dt")
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM core.bond_issue_fsc WHERE company_id = %s", [company_id])
+        cur.executemany(
+            f"INSERT INTO core.bond_issue_fsc (company_id, {', '.join(cols)}, raw) "
+            f"VALUES (%s, {', '.join(['%s'] * len(cols))}, %s::jsonb) ON CONFLICT (company_id, isin) DO NOTHING",
+            [[company_id] + [r[c] for c in cols] + [json.dumps(r["raw"], ensure_ascii=False, default=str)] for r in rows])
+    conn.commit()
+    return len(rows)

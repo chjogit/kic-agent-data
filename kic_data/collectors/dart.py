@@ -161,6 +161,7 @@ def parse_company(payload: dict) -> dict:
         "induty_code": (payload.get("induty_code") or "").strip(),
         "corp_cls": payload.get("corp_cls"),
         "corp_name": (payload.get("corp_name") or "").strip() or None,
+        "jurir_no": re.sub(r"[^0-9]", "", payload.get("jurir_no") or "") or None,  # 법인등록번호 (채권발행정보 조회 키)
     }
 
 
