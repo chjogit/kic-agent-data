@@ -25,78 +25,31 @@ jobs:
       - run: pip install -r requirements.txt
       - name: 점검
         run: |
-          cat > p.py <<'PY'
-          from kic_data import cli, db
-          from kic_data.collectors import dart_periodic as dp
-          from kic_data.http_util import make_session
-          want = "005930,000660,005380,051910,003490,015760,011200,011170,068270,035420,105560,007070,051600,035250,018260,030000,097950,028260".split(",")
-          s = make_session()
-          with db.connect() as conn:
-              cos = {c[1]: c for c in db.list_companies(conn, "KR") if c[1] in want and c[3]}
-          for t in want:
-              c = cos.get(t)
-              if not c:
-                  print(t, "없음"); continue
-              for year, code in [(2025, "11011"), (2026, "11012")]:
-                  try:
-                      rows = cli._fetch_periodic(s, "borrowing", c[3], year, code)
-                  except RuntimeError as e:
-                      print(t, c[2], year, code, e); continue
-                  tot = sum(r["amount"] for r in rows if dp.borrow_kind(r["account_nm"].split("#")[0]) != "bank")
-                  print(f"{t} {c[2]} {year}/{code} {rows[0]['fs_div'] if rows else '-'} 합 {float(tot)/1e8:,.0f}억")
-                  for r in rows:
-                      print(f"    {dp.borrow_kind(r['account_nm'].split('#')[0]):10s} {r['account_nm']:30s} {r['account_id']:55s} {float(r["amount"])/1e8:>12,.0f}억")
-              fs = cli._fs_cache and next(iter(cli._fs_cache.values()))
-              other = sorted({r["account_nm"] for r in (fs or []) if r.get("sj_div") == "BS" and any(w in r["account_nm"] for w in ("차입", "사채", "리스부채", "금융부채"))} - {r["account_nm"].split("#")[0] for r in rows})
-              if other:
-                  print("    (안 고른 비슷한 이름)", ", ".join(other))
-          PY
-          python p.py > probe_borrow.txt 2>&1 || true
-          cat > r.py <<'PY'
+          git fetch -q origin main && mkdir -p m && git --work-tree=m checkout origin/main -- kic_data && git reset -q
+          cat > cmp.py <<'PY'
+          import sys, importlib
           from kic_data import db
-          from kic_data.collectors import dart
-          from kic_data.http_util import make_session
-          s = make_session()
-          with db.connect() as conn:
-              cos = {c[1]: c for c in db.list_companies(conn, "KR")}
-          for t in ("015760", "068270", "018260", "035250"):
-              rows = [r for r in dart.fetch_financials(s, cos[t][3], 2026, report_code="11012", fs_div="CFS") if r["sj_div"] == "BS"]
-              print(f"\n## {t} {cos[t][2]} 재무상태표 {len(rows)}행")
-              for r in rows:
-                  a = r["amount"]
-                  print(f"  {r['account_nm'][:40]:40s} {r['account_id'][:60]:60s} {float(a)/1e8 if a is not None else 0:>12,.0f}억")
-          PY
-          python r.py > probe_bs.txt 2>&1 || true
-          cat > q.py <<'PY'
-          from kic_data import db, exposure_parse as ep
           from kic_data.collectors import dart_doc
           from kic_data.http_util import make_session
           s = make_session()
-          T = ("035250,051600,007070,018260,030000,004000,012750,"
-               "005930,005380,051910,010950,003490,015760,017670,033780").split(",")
-          with db.connect() as conn, conn.cursor() as cur:
+          with db.connect() as conn:
               cos = {c[1]: c for c in db.list_companies(conn, "KR")}
-              old, reps = {}, {}
-              for t in T:
-                  cid = cos[t][0]
-                  reps[t] = db.annual_reports(conn, cid)
-                  cur.execute("SELECT metric, currency, value FROM core.report_exposure WHERE company_id=%s AND metric IN ('fx_sens','ir_sens')", [cid])
-                  old[t] = {(m, c): float(v) for m, c, v in cur.fetchall()}
-                  cur.execute("SELECT found FROM ops.report_parse WHERE company_id=%s ORDER BY fiscal_year DESC LIMIT 1", [cid])
-                  r = cur.fetchone(); old[t]["found"] = r[0] if r else None
-              conn.commit()
-          for t in T:
-              files = dart_doc.fetch_document(s, reps[t][0][0])
-              r = ep.extract(files)
-              new = {(m.metric, m.currency): m.value for m in r["metrics"] if m.metric in ("fx_sens", "ir_sens")}
-              o = {k: v for k, v in old[t].items() if k != "found"}
-              diff = {k: (o.get(k), new.get(k)) for k in set(o) | set(new) if o.get(k) != new.get(k)}
-              print(f"{t} {cos[t][2]} found(old)={old[t]['found']} found(new)={r['found']}")
-              if diff:
-                  print("   바뀐 값:", diff)
-              print("   risk_text:", r["risk_text"][:160].replace("\n", " "))
+              reps = {t: db.annual_reports(conn, cos[t][0]) for t in ("003490",)}
+          files = dart_doc.fetch_document(s, reps["003490"][0][0])
+          import kic_data.exposure_parse as new
+          sys.path.insert(0, "m"); [sys.modules.pop(k) for k in list(sys.modules) if k.startswith("kic_data")]
+          import kic_data.exposure_parse as old
+          from kic_data.collectors import dart_doc as dd_old
+          print("old module:", old.__file__, old.PARSER_VERSION)
+          for name, mod, dd in (("main(v2)", old, dd_old), ("branch(v3)", new, dart_doc)):
+              r = mod.extract(files)
+              print(name, [(m.metric, m.currency, m.value, m.table_index, m.file) for m in r["metrics"] if m.metric == "fx_sens"])
+          for name, text in files.items():
+              for t in dart_doc.tables_from_xml(text, name):
+                  if new._is_sensitivity(t):
+                      print("후보", name, t.index, t.unit, (t.extra or {}).get("section"), "|", t.context[-120:], "|", t.text(4)[:300].replace("\n", " / "))
           PY
-          timeout 35m python -u q.py > probe_doc.txt 2>&1 || true
+          python cmp.py > probe_cmp.txt 2>&1 || true
       - name: PR 댓글로 올리기
         run: |
           pr=$(gh pr list --head "$GITHUB_REF_NAME" --json number --jq '.[0].number')

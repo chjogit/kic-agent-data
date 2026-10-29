@@ -73,8 +73,8 @@ def test_borrow_kind_names():
     k = dp.borrow_kind
     assert [k(n) for n in ("단기차입금", "유동성장기차입금", "유동성사채", "장기차입금", "사채", "전환사채", "차입부채",
                            "이자부차입금", "장기차입금 및 사채", "담보부사채", "비유동차입금(사채 포함)의 유동성 대체 부분",
-                           "비유동 사채의 비유동성 부분")] == \
-        ["short", "current_lt", "current_lt", "long", "bond", "bond", "bank", "mixed", "long", "bond", "current_lt", "bond"]
+                           "비유동 사채의 비유동성 부분", "자산유동화차입금")] == \
+        ["short", "current_lt", "current_lt", "long", "bond", "bond", "bank", "mixed", "long", "bond", "current_lt", "bond", "mixed"]
     for n in ("사채할인발행차금", "단기차입금의상환", "미지급이자", "장기대여금", "리스부채", "전환권대가", "단기차입금의 증가"):
         assert k(n) is None, n
 

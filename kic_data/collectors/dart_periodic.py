@@ -144,7 +144,7 @@ def pick_receivable(rows: list[dict]) -> dict | None:
 # 재무상태표 차입 계정(총차입금 용). 이름에서 공백을 빼고 맞춥니다. 리스부채는 넣지 않습니다.
 BORROW_RE = re.compile(r"차입금|차입부채|사채")
 BORROW_NOT_RE = re.compile(r"할인|할증|상환|증가|감소|발행차금|미지급|평가|손익|손실|이익|조정|파생|전환권|교환권|"
-                           r"신주인수권|대여|채권|예수|투자|자산")
+                           r"신주인수권|대여|채권|예수|투자|자산(?!유동화)")
 
 
 ASSET_ID_RE = re.compile(r"Receivable|Investment|Asset", re.I)
