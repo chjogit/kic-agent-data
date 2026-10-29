@@ -32,10 +32,15 @@ jobs:
           T = "005930,105560,005380,003490,051600,051910,017670,000660,010950,015760".split(",")
           with db.connect() as conn:
               cos = {c[1]: c for c in db.list_companies(conn, "KR")}
-              reps = {t: db.annual_reports(conn, cos[t][0])[0][0] for t in T}
+              reps = {t: [r[0] for r in db.annual_reports(conn, cos[t][0])] for t in T}
           for t in T:
-              tables = []
-              for name, text in dart_doc.fetch_document(s, reps[t]).items():
+              tables, files = [], None
+              for rc in reps[t]:
+                  try:
+                      files = dart_doc.fetch_document(s, rc); break
+                  except RuntimeError as e:
+                      print("  ", t, rc, e)
+              for name, text in (files or {}).items():
                   tables += dart_doc.tables_from_xml(text, name)
               m = ep.fx_hedge_accounting(tables)
               print(t, cos[t][2], "→", ("있음 #%s %s | %s" % (m.table_index, m.file, m.evidence[:220])) if m else "없음")
