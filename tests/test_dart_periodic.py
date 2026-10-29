@@ -72,8 +72,9 @@ def test_periodic_targets_latest_due_and_annual():
 def test_borrow_kind_names():
     k = dp.borrow_kind
     assert [k(n) for n in ("단기차입금", "유동성장기차입금", "유동성사채", "장기차입금", "사채", "전환사채", "차입부채",
-                           "이자부차입금", "장기차입금 및 사채", "담보부사채")] == \
-        ["short", "current_lt", "current_lt", "long", "bond", "bond", "bank", "mixed", "long", "bond"]
+                           "이자부차입금", "장기차입금 및 사채", "담보부사채", "비유동차입금(사채 포함)의 유동성 대체 부분",
+                           "비유동 사채의 비유동성 부분")] == \
+        ["short", "current_lt", "current_lt", "long", "bond", "bond", "bank", "mixed", "long", "bond", "current_lt", "bond"]
     for n in ("사채할인발행차금", "단기차입금의상환", "미지급이자", "장기대여금", "리스부채", "전환권대가", "단기차입금의 증가"):
         assert k(n) is None, n
 
@@ -116,3 +117,13 @@ def test_fetch_periodic_borrowing_no_debt_stays_on_consolidated(monkeypatch):
     monkeypatch.setattr(cli.dart, "fetch_financials", fake)
     cli._fs_cache.clear()
     assert cli._fetch_periodic(None, "borrowing", "002", 2025, "11011") == [] and calls == ["CFS"]
+
+
+def test_pick_borrowings_liability_side_only():
+    rows = [{"sj_div": "BS", "account_id": "a", "account_nm": "전환사채", "amount": Decimal(1)},   # 자산 쪽 투자
+            {"sj_div": "BS", "account_id": "t", "account_nm": "자산총계", "amount": Decimal(10)},
+            {"sj_div": "BS", "account_id": "b", "account_nm": "단기차입금", "amount": Decimal(2)},
+            {"sj_div": "BS", "account_id": "u", "account_nm": "부채총계", "amount": Decimal(5)},
+            {"sj_div": "BS", "account_id": "c", "account_nm": "사채", "amount": Decimal(3)}]
+    assert [r["amount"] for r in dp.pick_borrowings(rows)] == [2]
+    assert [r["amount"] for r in dp.pick_borrowings([rows[0], rows[2]])] == [1, 2]   # 총계 행이 없으면 전체

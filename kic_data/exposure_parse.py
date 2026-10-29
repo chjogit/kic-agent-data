@@ -30,7 +30,9 @@ UNIT_KRW = {"원": 1, "천원": 1e3, "백만원": 1e6, "십억원": 1e9, "억원
 NUM_RE = re.compile(r"^[△▲(\-−]?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?$")
 PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:p\s*)?(?:변동|상승|하락|증가|감소|절상|절하|강세|약세|만큼)")
 TOTAL_WORDS = ("합계", "총계", "소계", "계", "합 계", "총 계", "연결기준합계", "연결합계")
-PARSER_VERSION = "v2"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
+PARSER_VERSION = "v3"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
+# v3 (10-29): 표준 주석(XBRL) 표 모양('0.1 증가율', 단위 표 2행), '순이익 증가(감소)' 행, 이자율 표의 '환율과 같은 다른 변수' 문구,
+#             환율 민감도 표가 없을 때 위험관리 서술 표·본문에서 환위험 문단 발췌
 FX_DERIV_RE = re.compile(r"통화\s*선도|통화\s*스왑|통화\s*옵션|통화\s*이자율\s*스왑|선물환|외환\s*파생|NDF")
 
 
@@ -89,7 +91,7 @@ def _blob(t: Table, rows: int = 4) -> str:
 def _basis(text: str) -> str | None:
     if re.search(r"법인세\s*(비용)?\s*차감\s*전|세전", text):
         return "세전이익"
-    if re.search(r"세후|당기\s*순\s*(이익|손익)|당기\s*손익", text):
+    if re.search(r"세후|당기\s*순\s*(이익|손익)|당기\s*손익|순\s*(이익|손익)", text):
         return "당기손익"
     if "자본" in text:
         return "자본"
@@ -108,7 +110,18 @@ def _evidence(t: Table) -> str:
 # ---------------------------------------------------------------- 환율 민감도
 
 PRIOR_RE = re.compile(r"^전\s*기|^전기말|^전\s*년")
-TOTAL_ROW_RE = re.compile(r"법인세\s*(비용)?\s*차감\s*전|세전\s*(순)?\s*(이익|손익)|당기\s*(순)?\s*(이익|손익)")
+TOTAL_ROW_RE = re.compile(r"법인세\s*(비용)?\s*차감\s*전|세전\s*(순)?\s*(이익|손익)|당기\s*(순)?\s*(이익|손익)|^순\s*(이익|손익)")
+RATE_ROW_RE = re.compile(r"증가율|상승률|변동률|변동폭")   # 표준 주석 표: '… 발생가능한 0.1 증가율 | 0.1'
+
+
+def _rate_pct(t: Table) -> float | None:
+    """표준 주석(XBRL) 표의 변동률 행 → % (0.1 → 10). 1 보다 크면 이미 % 로 봅니다."""
+    for r in t.rows:
+        if r and RATE_ROW_RE.search(r[0].replace(" ", "")):
+            vals = [v for v in (num(c) for c in r[1:]) if v is not None]
+            if vals and vals[0] > 0:
+                return round(vals[0] * 100, 4) if vals[0] < 1 else vals[0]
+    return None
 UP_RE = re.compile(r"상승|인상|절하|증가")
 
 
@@ -133,8 +146,8 @@ def _ccy_cell(r: list[str]) -> tuple[int, str] | None:
 
 def _is_sensitivity(t: Table) -> bool:
     b = _blob(t, 6)
-    if not ("환율" in b and re.search(r"민감|변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|인상\s*시|인하\s*시", b)
-            and _pct(b) is not None):
+    if not ("환율" in b and re.search(r"민감|변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|인상\s*시|인하\s*시|합리적인\s*범위", b)
+            and (_pct(b) is not None or _rate_pct(t) is not None)):
         return False
     has_ccy = any(ccy_of(c) for r in t.rows for c in r[:2] + t.rows[0])
     has_total = any(r and TOTAL_ROW_RE.search(r[0].replace(" ", "")) for r in t.rows)
@@ -147,7 +160,7 @@ def sensitivity(t: Table) -> list[Metric]:
     if f is None:
         return []
     b = _blob(t, 6)
-    pct, basis = _pct(b), _basis(b)
+    pct, basis = _pct(b) or _rate_pct(t), _basis(b)
     out: dict[str, float] = {}
     up = _up_col(t)
     # 배치 A: 행 = 통화(앞 두 칸 중 하나), 열 = 상승/하락 (당기 먼저). 전기 행은 건너뜀
@@ -185,7 +198,7 @@ def sensitivity(t: Table) -> list[Metric]:
     if not out:
         for r in t.rows:
             label = r[0].replace(" ", "") if r else ""
-            if not TOTAL_ROW_RE.search(label) or "하락" in label or "감소" in label:
+            if not TOTAL_ROW_RE.search(label) or "하락" in label or ("감소" in label and "증가" not in label):
                 continue
             v = num(r[up]) if up is not None and up < len(r) else None
             if v is None:
@@ -324,10 +337,14 @@ def _ir_change(text: str) -> float | None:
     return v / 100 if m.group(2).lower().startswith(("bp", "베이")) else v
 
 
+OTHER_VAR_RE = re.compile(r"환율\s*(과|와|등)?\s*(같은)?\s*(다른|기타)\s*(모든\s*)?변수")  # '환율과 같은 다른 변수는 일정'
+
+
 def _is_ir_sensitivity(t: Table) -> bool:
-    b = _blob(t, 6)
+    b = OTHER_VAR_RE.sub(" ", _blob(t, 6))
     return ("이자율" in b or "금리" in b) and "환율" not in b \
-        and bool(re.search(r"변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|민감도|인상\s*시|인하\s*시", b)) \
+        and bool(re.search(r"변동\s*시|상승\s*시|하락\s*시|상승시|하락시|변동시|민감도|인상\s*시|인하\s*시|변동\s*한다면|"
+                           r"\d\s*(bp|BP|bps)\s*(상승|하락)", b)) \
         and _ir_change(b) is not None
 
 
@@ -399,6 +416,43 @@ def hedge_text(tables: list[Table], width: int = 500) -> str:
         return ""
     t = min(cands, key=lambda x: (_section_rank(x), x.index))
     return (t.context[-250:] + " " + t.text(5))[:width]
+
+
+# ---------------------------------------------------------------- 환위험 서술 (환율 민감도 표가 없을 때)
+
+FX_RISK_COL_RE = re.compile(r"환\s*위험|환율\s*변동\s*위험|외환\s*위험|환율\s*위험")
+FX_RISK_TEXT_RE = re.compile(r"(환\s*위험|환율\s*변동\s*위험|외환\s*위험)\s*(관리|에\s*대한|은|과)")
+
+
+def fx_risk_narrative(tables: list[Table], width: int = 900) -> str:
+    """표준 주석의 위험관리 서술 표('위험에 대한 노출정도에 대한 기술 | …', 열 = 환위험)에서 환위험 열 문장.
+    연결 주석 → 별도 주석 → 그 밖 순으로 처음 찾은 표. 숫자로 바꾸지 않고 근거(RAG)로만 씁니다."""
+    for t in sorted(tables, key=lambda x: (_section_rank(x), x.index)):
+        cols = {i for r in t.rows[:3] for i, c in enumerate(r) if i > 0 and FX_RISK_COL_RE.search(c)}
+        if not cols:
+            continue
+        parts = []
+        for r in t.rows:
+            if r and "기술" in r[0]:
+                for i in sorted(cols):
+                    if i < len(r) and len(re.sub(r"[^가-힣]", "", r[i])) >= 20 and r[i] not in parts:
+                        parts.append(r[i])
+        if parts:
+            return " ".join(parts)[:width]
+    return ""
+
+
+def fx_risk_body(files: dict[str, str], width: int = 600) -> str:
+    """본문(표 제외)에서 '환위험 관리' 등 뒤 문단. 문장이 짧으면(제목만) 다음 것을 봅니다."""
+    from .collectors.dart_doc import TABLE_RE, clean
+
+    for text in files.values():
+        plain = clean(TABLE_RE.sub(" ", text))
+        for m in FX_RISK_TEXT_RE.finditer(plain):
+            piece = plain[m.start():m.start() + width].strip()
+            if len(re.sub(r"[^가-힣]", "", piece)) >= 80:
+                return piece
+    return ""
 
 
 # ---------------------------------------------------------------- 가격변동 문단 (판가 전가력 근거)
@@ -494,6 +548,10 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
     hedge = hedge_text(all_tables)
     if hedge:
         got.add("hedge_text")
+    if not risk_text:   # 환율 민감도 표가 없거나 표 앞 문맥이 비었을 때 (v3)
+        risk_text = fx_risk_narrative(all_tables) or fx_risk_body(files)
+    if risk_text:
+        got.add("risk_text")
     prices = price_text(files)
     if prices:
         got.add("price_text")

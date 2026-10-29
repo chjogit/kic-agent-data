@@ -52,35 +52,49 @@ jobs:
                   print("    (안 고른 비슷한 이름)", ", ".join(other))
           PY
           python p.py > probe_borrow.txt 2>&1 || true
-          cat > q.py <<'PY'
-          import re
-          from kic_data import db, exposure_parse as ep
-          from kic_data.collectors import dart_doc
+          cat > r.py <<'PY'
+          from kic_data import db
+          from kic_data.collectors import dart
           from kic_data.http_util import make_session
           s = make_session()
           with db.connect() as conn:
               cos = {c[1]: c for c in db.list_companies(conn, "KR")}
-              reps = {t: db.annual_reports(conn, cos[t][0]) for t in "035250,051600,007070,018260,030000,004000,012750".split(",")}
-          for t, reports in reps.items():
-              rcept = reports[0][0]
-              files = dart_doc.fetch_document(s, rcept)
-              print(f"\n##### {t} {cos[t][2]} {rcept} {[(n, len(v)) for n, v in files.items()]}")
-              for name, text in files.items():
-                  tbs = dart_doc.tables_from_xml(text, name)
-                  plain = dart_doc.clean(dart_doc.TABLE_RE.sub(" ", text))
-                  secs = sorted({(tb.extra or {}).get("section", "") for tb in tbs})
-                  print(f"  {name}: 표 {len(tbs)}개, 본문 {len(plain)}자, 목차 {len(secs)}개")
-                  for k in ("환율", "민감도", "환위험", "외화", "가격변동", "가격 변동", "위험관리", "이자율"):
-                      i = plain.find(k)
-                      print(f"    '{k}' {plain.count(k)}회" + (f" 첫 문맥: {plain[max(0,i-60):i+100]!r}" if i >= 0 else ""))
-                  for tb in tbs:
-                      blob = tb.context[-200:] + " " + tb.text(4)
-                      if "환율" in blob and ("변동" in blob or "상승" in blob or "민감" in blob):
-                          print(f"    [환율표] #{tb.index} 단위={tb.unit} 목차={(tb.extra or {}).get('section','')[:40]!r} 감도판정={ep._is_sensitivity(tb)}")
-                          print("      문맥:", tb.context[-200:].replace("\n", " "))
-                          print("      " + tb.text(6)[:600].replace("\n", "\n      "))
+          for t in ("015760", "068270", "018260", "035250"):
+              rows = [r for r in dart.fetch_financials(s, cos[t][3], 2026, report_code="11012", fs_div="CFS") if r["sj_div"] == "BS"]
+              print(f"\n## {t} {cos[t][2]} 재무상태표 {len(rows)}행")
+              for r in rows:
+                  a = r["amount"]
+                  print(f"  {r['account_nm'][:40]:40s} {r['account_id'][:60]:60s} {float(a)/1e8 if a is not None else 0:>12,.0f}억")
+          PY
+          python r.py > probe_bs.txt 2>&1 || true
+          cat > q.py <<'PY'
+          from kic_data import db, exposure_parse as ep
+          from kic_data.collectors import dart_doc
+          from kic_data.http_util import make_session
+          s = make_session()
+          T = ("035250,051600,007070,018260,030000,004000,012750,"
+               "005930,000660,005380,000270,051910,006400,010950,096770,003490,034020,015760,017670,030200,033780,097950,271560,028260,009540,047050,011170").split(",")
+          with db.connect() as conn, conn.cursor() as cur:
+              cos = {c[1]: c for c in db.list_companies(conn, "KR")}
+              old, reps = {}, {}
+              for t in T:
+                  cid = cos[t][0]
+                  reps[t] = db.annual_reports(conn, cid)
+                  cur.execute("SELECT metric, currency, value FROM core.report_exposure WHERE company_id=%s AND metric IN ('fx_sens','ir_sens')", [cid])
+                  old[t] = {(m, c): float(v) for m, c, v in cur.fetchall()}
+                  cur.execute("SELECT found FROM ops.report_parse WHERE company_id=%s ORDER BY fiscal_year DESC LIMIT 1", [cid])
+                  r = cur.fetchone(); old[t]["found"] = r[0] if r else None
+              conn.commit()
+          for t in T:
+              files = dart_doc.fetch_document(s, reps[t][0][0])
               r = ep.extract(files)
-              print("  extract found:", r["found"], "risk_text:", len(r["risk_text"]), "price:", len(r["price_text"]))
+              new = {(m.metric, m.currency): m.value for m in r["metrics"] if m.metric in ("fx_sens", "ir_sens")}
+              o = {k: v for k, v in old[t].items() if k != "found"}
+              diff = {k: (o.get(k), new.get(k)) for k in set(o) | set(new) if o.get(k) != new.get(k)}
+              print(f"{t} {cos[t][2]} found(old)={old[t]['found']} found(new)={r['found']}")
+              if diff:
+                  print("   바뀐 값:", diff)
+              print("   risk_text:", r["risk_text"][:160].replace("\n", " "))
           PY
           python q.py > probe_doc.txt 2>&1 || true
       - name: PR 댓글로 올리기

@@ -155,7 +155,8 @@ def borrow_kind(account_nm: str) -> str | None:
         return None
     if "차입부채" in nm:
         return "bank"
-    if nm.startswith("유동성") or (nm.startswith("유동") and "장기" in nm):
+    if nm.startswith("유동성") or (nm.startswith("유동") and "장기" in nm) or "유동성대체" in nm \
+            or ("유동성부분" in nm and "비유동성부분" not in nm):
         return "current_lt"
     if nm.startswith(("단기", "유동")):
         return "short"
@@ -167,9 +168,15 @@ def borrow_kind(account_nm: str) -> str | None:
 
 
 def pick_borrowings(rows: list[dict]) -> list[dict]:
-    """전체 재무제표에서 재무상태표 차입 계정 행들(총차입금 = 합). 한 응답(연결 또는 별도)만 넘깁니다."""
+    """전체 재무제표에서 재무상태표 차입 계정 행들(총차입금 = 합). 한 응답(연결 또는 별도)만 넘깁니다.
+    응답은 표 순서(자산 → 자산총계 → 부채 → 부채총계)라, 자산총계와 부채총계 사이 행만 봅니다
+    (자산 쪽 '전환사채' 투자 같은 행을 차입으로 잡지 않게). 두 행을 못 찾으면 전체에서 고릅니다."""
+    bs = [r for r in rows if r.get("sj_div") == "BS"]
+    names = [(r.get("account_nm") or "").replace(" ", "") for r in bs]
+    if "자산총계" in names and "부채총계" in names and names.index("자산총계") < names.index("부채총계"):
+        bs = bs[names.index("자산총계") + 1:names.index("부채총계")]
     out, seen = [], set()
-    for r in rows:
+    for r in bs:
         if r.get("sj_div") != "BS" or r.get("amount") is None or not borrow_kind(r.get("account_nm")):
             continue
         nm, n = r.get("account_nm") or "", 1
