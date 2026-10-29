@@ -43,9 +43,9 @@ jobs:
                   except RuntimeError as e:
                       print(t, c[2], year, code, e); continue
                   tot = sum(r["amount"] for r in rows if dp.borrow_kind(r["account_nm"].split("#")[0]) != "bank")
-                  print(f"{t} {c[2]} {year}/{code} {rows[0]['fs_div'] if rows else '-'} 합 {tot/1e8:,.0f}억")
+                  print(f"{t} {c[2]} {year}/{code} {rows[0]['fs_div'] if rows else '-'} 합 {float(tot)/1e8:,.0f}억")
                   for r in rows:
-                      print(f"    {dp.borrow_kind(r['account_nm'].split('#')[0]):10s} {r['account_nm']:30s} {r['account_id']:55s} {r['amount']/1e8:>12,.0f}억")
+                      print(f"    {dp.borrow_kind(r['account_nm'].split('#')[0]):10s} {r['account_nm']:30s} {r['account_id']:55s} {float(r["amount"])/1e8:>12,.0f}억")
               fs = cli._fs_cache and next(iter(cli._fs_cache.values()))
               other = sorted({r["account_nm"] for r in (fs or []) if r.get("sj_div") == "BS" and any(w in r["account_nm"] for w in ("차입", "사채", "리스부채", "금융부채"))} - {r["account_nm"].split("#")[0] for r in rows})
               if other:
