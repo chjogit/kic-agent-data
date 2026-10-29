@@ -3,6 +3,7 @@
 -- metric: fx_sens(환율 change_pct% 상승 시 basis 영향, 원) · fx_asset / fx_liab(외화 화폐성 자산·부채, 원화 환산 원)
 --         export_share(수출 매출 비중 %) · fx_derivative(외환 파생상품 사용 1/0)
 --         ir_sens(이자율 change_pct%p 상승 시 basis 영향, 원)
+--         (v2, 10-29) ir_sens_liab(이자율 상승 시 부채 쪽 행만의 영향, 원) · fx_hedge_acct(환율 위험회피회계 적용 1)
 
 CREATE TABLE IF NOT EXISTS core.report_exposure (
     company_id   bigint NOT NULL REFERENCES core.company (company_id),

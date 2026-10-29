@@ -129,12 +129,17 @@ def annual_reports(conn, company_id: int, limit: int = 3) -> list[tuple]:
         return cur.fetchall()
 
 
-def report_parsed(conn, company_id: int, fiscal_year: int) -> str | None:
+def report_parsed(conn, company_id: int, fiscal_year: int, version: str | None = None) -> str | None:
+    """이미 읽은 접수번호. version 을 주면 그 파서 버전 표시('parser:v2')가 found 에 있을 때만 읽은 것으로 봄."""
     with conn.cursor() as cur:
-        cur.execute("SELECT rcept_no FROM ops.report_parse WHERE company_id = %s AND fiscal_year = %s",
+        cur.execute("SELECT rcept_no, found FROM ops.report_parse WHERE company_id = %s AND fiscal_year = %s",
                     [company_id, fiscal_year])
         r = cur.fetchone()
-        return r[0] if r else None
+        if not r:
+            return None
+        if version and f"parser:{version}" not in (r[1] or []):
+            return None
+        return r[0]
 
 
 def annual_revenue(conn, company_id: int, fiscal_year: int) -> float | None:
