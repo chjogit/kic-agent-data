@@ -277,3 +277,18 @@ def test_v3_relaxed_rules_do_not_change_tables_v2_already_found():
          ["법인세비용차감전순손익 증가(감소)", "999,000,000"]])
     m = [k for k in ep.extract({"a.xml": "<TITLE>위험관리 및 파생거래</TITLE>" + v2 + xbrl})["metrics"] if k.metric == "fx_sens"]
     assert [(k.currency, k.value) for k in m] == [("USD", 100e6)]
+
+
+def test_v4_hedge_accounting_needs_currency_in_same_sentence():   # 삼성전자·한전KPS 오탐 (10-29 표본 대조)
+    inv = _t([["구분", "당기"], ["통화선도 평가손익", "10"]],
+             before="라. 파생상품 연결회사는 재고자산의 가격 변동 위험 등을 회피하기 위한 현금흐름 위험회피회계를 적용하고 있습니다. "
+                    "외화 환율 변동 위험은 선물환으로 관리합니다.")
+    assert "fx_hedge_acct" not in ep.extract({"a.xml": inv})["found"]
+    policy = "<TITLE>1. 개요 (연결)</TITLE>" + _t([["구분", "내용"], ["외화환산", "환율"]],
+                                                  before="연결실체는 통화선도에 대해 위험회피회계를 적용할 수 있습니다.")
+    assert "fx_hedge_acct" not in ep.extract({"a.xml": policy})["found"]
+    ok = "<TITLE>36. 위험관리 (연결)</TITLE>" + _t([["구분", "당기"], ["통화스왑", "1"]],
+                                                   before="연결실체는 외화차입금의 현금흐름 변동위험을 회피하기 위하여 통화스왑을 이용한 현금흐름위험회피회계를 적용하고 있습니다.")
+    res = ep.extract({"a.xml": ok})
+    m = next(x for x in res["metrics"] if x.metric == "fx_hedge_acct")
+    assert "통화스왑" in m.evidence and m.evidence.endswith("있습니다")

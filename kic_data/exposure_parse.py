@@ -30,9 +30,10 @@ UNIT_KRW = {"원": 1, "천원": 1e3, "백만원": 1e6, "십억원": 1e9, "억원
 NUM_RE = re.compile(r"^[△▲(\-−]?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?$")
 PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:p\s*)?(?:변동|상승|하락|증가|감소|절상|절하|강세|약세|만큼)")
 TOTAL_WORDS = ("합계", "총계", "소계", "계", "합 계", "총 계", "연결기준합계", "연결합계")
-PARSER_VERSION = "v3"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
+PARSER_VERSION = "v4"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
 # v3 (10-29): 표준 주석(XBRL) 표 모양('0.1 증가율', 단위 표 2행), '순이익 증가(감소)' 행, 이자율 표의 '환율과 같은 다른 변수' 문구,
 #             환율 민감도 표가 없을 때 위험관리 서술 표·본문에서 환위험 문단 발췌
+# v4 (10-29 밤): 위험회피회계는 통화 표현과 같은 문장일 때만, 회계정책·개요 목차 제외 (표본 대조에서 오탐 2건)
 FX_DERIV_RE = re.compile(r"통화\s*선도|통화\s*스왑|통화\s*옵션|통화\s*이자율\s*스왑|선물환|외환\s*파생|NDF")
 
 
@@ -406,11 +407,24 @@ HEDGE_NEG_RE = re.compile(r"위험\s*회피\s*회계[^.。]{0,30}(적용하지|�
 HEDGE_TABLE_RE = re.compile(r"통화\s*선도|통화\s*스왑|선물환|통화\s*옵션|통화\s*이자율\s*스왑")
 
 
+HEDGE_CCY_RE = re.compile(r"통화|환율|외화|환위험|외환|해외사업장")
+POLICY_SECTION_RE = re.compile(r"개요|작성\s*기준|회계\s*정책")
+
+
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=다)\.\s*|(?<=[.。])\s+", re.sub(r"\s+", " ", text)) if x]
+
+
 def fx_hedge_accounting(tables: list[Table]) -> Metric | None:
-    for t in tables:
-        b = _blob(t, 8)
-        if HEDGE_ACCT_RE.search(b) and re.search(r"통화|환율|외화|환위험", b) and not HEDGE_NEG_RE.search(b):
-            return Metric("fx_hedge_acct", "ALL", 1.0, None, None, None, _evidence(t) or b[:300], t.index, t.file)
+    """'위험회피회계'와 통화 표현이 **같은 문장**에 있고 부정문이 아닌 첫 표 (v4).
+    v3 까지는 표 문맥 전체에서 두 말을 따로 찾아, 재고자산 가격 위험회피(삼성전자)나 회계정책 개요 문단(한전KPS)도 잡았음.
+    회계정책·작성기준·개요 목차의 표는 보지 않습니다(실제 적용이 아니라 정책 설명)."""
+    for t in sorted(tables, key=lambda x: (_section_rank(x), x.index)):
+        if POLICY_SECTION_RE.search((t.extra or {}).get("section", "")):
+            continue
+        for sent in _sentences(_blob(t, 8)):
+            if HEDGE_ACCT_RE.search(sent) and HEDGE_CCY_RE.search(sent) and not HEDGE_NEG_RE.search(sent):
+                return Metric("fx_hedge_acct", "ALL", 1.0, None, None, None, sent[:300], t.index, t.file)
     return None
 
 
