@@ -424,9 +424,14 @@ def trading_dates(conn, market: str, since) -> list:
         return [r[0] for r in cur.fetchall()]
 
 
-def lending_dates(conn, since) -> set:
+def lending_dates(conn, since, source: str | None = None) -> set:
+    """대차 행이 있는 날짜 (source 를 주면 그 원천·시장만: fsc_lending=코스피, fsc_lending_kosdaq=코스닥)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT trade_date FROM core.stock_lending_daily WHERE trade_date >= %s", [since])
+        if source:
+            cur.execute("SELECT DISTINCT trade_date FROM core.stock_lending_daily WHERE trade_date >= %s AND source = %s",
+                        [since, source])
+        else:
+            cur.execute("SELECT DISTINCT trade_date FROM core.stock_lending_daily WHERE trade_date >= %s", [since])
         return {r[0] for r in cur.fetchall()}
 
 
@@ -616,13 +621,36 @@ def fact_companies(conn, fiscal_year: int, report_code: str, source: str) -> set
 def fetch_facts(conn, company_id: int, source: str) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT fiscal_year, report_code, account_id, amount, amount_ytd, currency, period_end "
+            "SELECT fiscal_year, report_code, account_id, amount, amount_ytd, currency, period_end, fs_div "
             "FROM core.financial_fact WHERE company_id = %s AND source = %s "
-            "AND (source <> 'dart' OR (fs_div = 'CFS' AND sj_div IN ('BS', 'IS', 'CIS')))",  # 자본변동표·현금흐름표 제외
+            "AND (source <> 'dart' OR (fs_div IN ('CFS', 'OFS') AND sj_div IN ('BS', 'IS', 'CIS')))",  # 자본변동표·현금흐름표 제외
             [company_id, source],
         )
-        cols = ["fiscal_year", "report_code", "account_id", "amount", "amount_ytd", "currency", "period_end"]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        cols = ["fiscal_year", "report_code", "account_id", "amount", "amount_ytd", "currency", "period_end", "fs_div"]
+        return prefer_consolidated([dict(zip(cols, r)) for r in cur.fetchall()])
+
+
+def prefer_consolidated(facts: list[dict]) -> list[dict]:
+    """DART 재무에서 연결(CFS)/별도(OFS) 중 하나만 남깁니다 (분기 값을 누적 차감으로 구하므로 한 해 안에서 기준을 맞춤).
+    - 그 해 모든 보고서에 연결이 있으면 연결, 모든 보고서에 별도가 있으면 별도 (종속회사 없는 회사, 연중 연결 시작한 회사)
+    - 둘 다 아니면 보고서마다 연결 우선
+    SEC 등 fs_div 가 없는 원천은 그대로."""
+    by_year: dict[int, dict[str, set]] = {}
+    for f in facts:
+        if f.get("fs_div") in ("CFS", "OFS"):
+            by_year.setdefault(f["fiscal_year"], {}).setdefault(f["report_code"], set()).add(f["fs_div"])
+    pick: dict[tuple, str] = {}
+    for year, reports in by_year.items():
+        if all("CFS" in d for d in reports.values()):
+            basis = "CFS"
+        elif all("OFS" in d for d in reports.values()):
+            basis = "OFS"
+        else:
+            basis = None
+        for code, divs in reports.items():
+            pick[(year, code)] = basis or ("CFS" if "CFS" in divs else "OFS")
+    return [f for f in facts if f.get("fs_div") not in ("CFS", "OFS")
+            or pick.get((f["fiscal_year"], f["report_code"])) == f["fs_div"]]
 
 
 def upsert_quarters(conn, company_id: int, rows: list[dict], source: str) -> int:
@@ -721,6 +749,29 @@ def create_peer_group(conn, base_company_id: int, method: str, members: list[tup
         )
     conn.commit()
     return gid
+
+
+def companies_with_docs(conn, source: str) -> set[int]:
+    """rag.document 에 source 문서가 하나라도 있는 company_id."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT company_id FROM rag.document WHERE source = %s", [source])
+        out = {r[0] for r in cur.fetchall()}
+    conn.commit()
+    return out
+
+
+def peer_members_by_base(conn, method_prefix: str = "krx_sector:") -> dict[int, list[int]]:
+    """{기준 company_id: [비교군 company_id (순위 순)]} — method 가 method_prefix 로 시작하는 그룹만."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT g.base_company_id, m.company_id FROM core.peer_group g "
+                    "JOIN core.peer_member m ON m.peer_group_id = g.peer_group_id "
+                    "WHERE g.method LIKE %s ORDER BY g.base_company_id, m.rank", [method_prefix + "%"])
+        rows = cur.fetchall()
+    conn.commit()
+    out: dict[int, list[int]] = {}
+    for base, cid in rows:
+        out.setdefault(base, []).append(cid)
+    return out
 
 
 def find_company(conn, market: str, ticker: str):

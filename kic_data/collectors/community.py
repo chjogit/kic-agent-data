@@ -34,8 +34,12 @@ QUERY_SUFFIXES = ("주가", "주식")
 MAX_PAGES = 10
 
 
-def is_spam(text: str) -> bool:
-    return any(s.lower() in text.lower() for s in SPAM)
+def is_spam(text: str, names: tuple[str, ...] = ()) -> bool:
+    """광고·리딩방 글이면 True. names(종목명)는 지우고 봅니다 (DB손해보험의 '보험'처럼 회사명이 광고어와 겹칠 때)."""
+    low = text.lower()
+    for n in names:
+        low = low.replace(n.lower(), " ")
+    return any(s.lower() in low for s in SPAM)
 
 
 def parse_items(payload: dict, source: str, today: date | None = None) -> list[dict]:
@@ -88,7 +92,7 @@ def collect(session, source: str, term: str, must: tuple[str, ...], since: date,
                 if r["published_at"] and r["published_at"] < since:
                     old += 1
                     continue
-                if not any(m.lower() in text.lower() for m in must) or is_spam(text):
+                if not any(m.lower() in text.lower() for m in must) or is_spam(text, must):
                     continue
                 by_url.setdefault(r["url"], r)
             if old == len(items):  # 최신순이라 전부 기간 밖이면 다음 페이지도 볼 필요 없음

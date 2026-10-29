@@ -37,7 +37,9 @@ _PREFIX = {
     "96": "일반서비스",
 }
 # KSIC 만으로는 KRX 와 달라지는 대표 사례 (KRX 업종 기준으로 고침)
-OVERRIDES: dict[str, str] = {}
+OVERRIDES: dict[str, str] = {
+    "095340": "전기·전자",  # ISC: 반도체 테스트 소켓 제조인데 DART KSIC 가 도매업이라 '유통'으로 들어감
+}
 
 
 def ksic_to_krx(ksic: str | None, ticker: str | None = None) -> str | None:
