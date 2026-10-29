@@ -1,4 +1,4 @@
-"""금융위원회_채권발행정보 파서 (kic_data/collectors/fsc_bond.py). 필드 이름은 첫 응답 전이라 후보·값 모양으로 고르는지 봅니다."""
+"""금융위원회_채권발행정보 파서 (kic_data/collectors/fsc_bond.py). 첫 행은 2026-10-29 실제 응답(현대차) 모양."""
 from datetime import date
 from decimal import Decimal
 
@@ -15,16 +15,19 @@ def _payload(items, total=None):
 
 
 def test_parse_items_known_and_guessed_keys():
-    items = [{"basDt": "20261029", "crno": "1301110006246", "bondIsurNm": "샘플", "isinCd": "KR6000001234",
-              "isinCdNm": "샘플123", "bondIssuDt": "20240310", "bondExprDt": "20290310", "bondIssuAmt": "200000000000",
-              "bondIssuCurCd": "KRW", "bondSrfcInrt": "3.25", "intrtChngClsfNm": "고정금리"},
+    items = [{"basDt": "20211004", "crno": "1101110085450", "scrsItmsKcd": "1108", "isinCd": "KR6000001234",
+              "scrsItmsKcdNm": "일반회사채", "bondIsurNm": "샘플", "isinCdNm": "샘플123", "bondIssuDt": "20240310",
+              "bondIssuFrmtNm": "전자증권", "bondIssuAmt": "200000000000", "bondIssuCurCd": "KRW", "bondIssuCurCdNm": "KRW",
+              "bondExprDt": "20290310", "bondPymtAmt": "200000000000", "irtChngDcd": "1", "irtChngDcdNm": "고정",
+              "bondSrfcInrt": "3.25", "bondIntTcd": "1", "bondIntTcdNm": "이표채"},
              {"basDt": "20261029", "isinCd": "KR6000005678", "someIssuDt": "2025-01-05", "xExprDt": "99991231",
               "someIssuAmt": "1,000", "unknownField": "변동"}]
     rows, total = fb.parse_items(_payload(items))
     a, b = rows
     assert total == 2 and a["isin"] == "KR6000001234" and a["coupon_rate"] == Decimal("3.25")
     assert a["issue_date"] == date(2024, 3, 10) and a["maturity_date"] == date(2029, 3, 10) and a["rate_kind"] == "fixed"
-    assert a["issue_amount"] == Decimal(200000000000) and a["raw"]["crno"] == "1301110006246"
+    assert a["issue_amount"] == Decimal(200000000000) and a["raw"]["crno"] == "1101110085450"
+    assert a["rate_type"] == "고정" and a["bond_type"] == "일반회사채"
     assert b["issue_date"] == date(2025, 1, 5) and b["maturity_date"] is None   # 9999… = 만기 없음 표기
     assert b["rate_kind"] == "floating" and b["coupon_rate"] is None
 

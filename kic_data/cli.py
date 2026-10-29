@@ -1620,7 +1620,7 @@ def main(argv=None) -> int:
     a.add_argument("--max-days", type=int, default=None, help="한 번에 받을 최대 거래일 수 (최근 날짜부터)")
     a.set_defaults(fn=cmd_lending)
     a = sub.add_parser("collect-bond-issue", help="회사채 발행 종목: 표면이율·고정/변동·만기 (금융위원회_채권발행정보)")
-    a.add_argument("--bas-dt", default=None, help="기준일자 YYYYMMDD (기본: 원천 기본값)")
+    a.add_argument("--bas-dt", default=None, help="기준일자 YYYYMMDD (기본: 없음 = 발행 종목 전체. 주면 0건인 경우가 많음)")
     a.set_defaults(fn=cmd_bond_issue)
     a = sub.add_parser("probe-bond-issue", help="채권발행정보 원 응답 확인 (DB 에 쓰지 않음)")
     a.add_argument("--tickers", default="005930,005380,007070,034020,015760")

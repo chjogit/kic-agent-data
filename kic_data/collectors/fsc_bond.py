@@ -3,8 +3,11 @@
 에이전트 1 의 차입 조건(D2): 발행금액·표면이율·금리구분(고정·변동)·만기일. 사채·CP 잔액 공시가 없는 회사의 빈 곳을 채우는 데 씁니다.
   - 엔드포인트: GetBondTradInfoService_V2 / getIssuIssuItemStat_V2 (발행자별 발행 종목 현황, 포털 상세기능 기준)
   - 조회: 법인등록번호(crno) 또는 채권발행인명(bondIsurNm), 기준일자(basDt). 기준일 다음 영업일 오후 1시 이후 갱신.
-  - 응답 필드 이름은 포털 문서에 없어 첫 응답으로 확인합니다(probe-bond-issue). 그 전까지는 이름 후보 + 값 모양으로 고르고,
-    원 응답(raw)을 함께 저장해 나중에 다시 해석할 수 있게 합니다.
+  - 응답 필드(2026-10-29 첫 응답으로 확인): isinCd·isinCdNm·bondIsurNm·bondIssuDt·bondExprDt·bondIssuAmt(원)·
+    bondIssuCurCd·bondSrfcInrt(%)·irtChngDcdNm('고정'/'변동')·scrsItmsKcdNm(일반회사채 등)·bondIntTcdNm(이표채 등).
+    법인등록번호만 주고 기준일자를 빼면 그 회사가 발행한 종목 전체(만기 지난 것 포함)가 옵니다. 기준일자를 주면 0건인 경우가 많음.
+    발행사 본인 종목만 나옵니다(연결 자회사 발행분 없음). 조기상환·콜은 반영되지 않으므로 '만기 전 = 미상환'은 근사입니다.
+    이름이 바뀌면 후보·값 모양으로 다시 고르고, 원 응답(raw)을 함께 저장해 나중에 다시 해석할 수 있게 합니다.
 이용허락: 공공누리 2유형(출처표시·상업적 이용금지) → 보고서에 '출처: 금융위원회(한국예탁결제원)'를 표시하세요.
 """
 from __future__ import annotations
@@ -19,7 +22,7 @@ URL = "https://apis.data.go.kr/1160100/GetBondTradInfoService_V2/getIssuIssuItem
 _limiter = RateLimiter(0.3)
 ROWS = 1000
 
-# 필드 이름 후보 (첫 응답으로 확인 전). 앞의 것이 우선, 없으면 정규식으로 찾음
+# 필드 이름 (앞의 것이 확인된 이름, 없으면 정규식으로 찾음)
 KEYS = {
     "isin": (("isinCd",), r"^isinCd$"),
     "bond_name": (("isinCdNm", "bondNm"), r"(isinCdNm|ItmsNm|bondNm)$"),
@@ -29,8 +32,8 @@ KEYS = {
     "issue_amount": (("bondIssuAmt", "issuAmt"), r"Issu.*Amt$"),
     "currency": (("bondIssuCurCd", "issuCurCd"), r"Cur.*Cd$"),
     "coupon_rate": (("bondSrfcInrt", "srfcInrt", "surfIntrt"), r"(Srfc|Surf|srfc|surf).*(Inrt|Intrt|Rt)$"),
-    "rate_type": (("intrtChngClsfNm", "bondIntrtChngClsfNm"), r"(Intrt|Inrt).*(Clsf|Tp|Knd).*Nm$"),
-    "bond_type": (("scrsItmsKcdNm", "bondKndNm"), r"(Knd|Kcd).*Nm$"),
+    "rate_type": (("irtChngDcdNm",), r"(Intrt|Inrt|irt|Irt).*(Clsf|Tp|Knd|Dcd).*Nm$"),
+    "bond_type": (("scrsItmsKcdNm",), r"(Knd|Kcd).*Nm$"),
 }
 FIXED_RE = re.compile(r"고정")
 FLOAT_RE = re.compile(r"변동")
