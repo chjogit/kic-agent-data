@@ -117,7 +117,7 @@ def test_fx_derivative_and_risk_text():
 
 def test_nothing_found_returns_empty():
     res = ep.extract({"a.xml": _t([["구분", "금액"], ["토지", "1,000"]])})
-    assert res == {"metrics": [], "risk_text": "", "price_text": [], "found": []}
+    assert res == {"metrics": [], "risk_text": "", "price_text": [], "hedge_text": "", "found": []}
 
 
 def test_sensitivity_prefers_consolidated_notes_section():   # 지주사: 앞쪽 관계회사 표보다 연결재무제표 주석의 표
@@ -166,3 +166,41 @@ def test_sensitivity_risk_section_beats_mdna():   # 한화: 경영진 분석(3. 
     x = "<TITLE>3. 재무상태 및 영업실적</TITLE>" + mdna + "<TITLE>5. 위험관리 및 파생거래</TITLE>" + risk
     (s,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "fx_sens"]
     assert s.value == -92_568e6
+
+
+def test_ir_liability_rows_samsung_lgchem_hyundai():   # 10-29 원문 점검(probe-hedge)에서 본 세 가지 모양
+    sam = _t([["구 분", "제57기말", "제57기말", "제56기말", "제56기말"],
+              ["구 분", "이자율 상승시", "이자율 하락시", "이자율 상승시", "이자율 하락시"],
+              ["금융자산", "76,243", "△76,243", "141,671", "△141,671"],
+              ["금융부채", "△33,597", "33,597", "△5,702", "5,702"],
+              ["순효과", "42,646", "△42,646", "135,969", "△135,969"]],
+             before="변동금리부 금융자산 및 금융부채에 대하여 이자율이 1%p 변동할 경우 당기손익(법인세효과 반영 전)에 미치는 영향",
+             unit_table="(단위: 백만원)")
+    lg = _t([["구분", "2025.12.31", "2025.12.31", "2024.12.31", "2024.12.31"],
+             ["구분", "1%p 상승시", "1%p 하락시", "1%p 상승시", "1%p 하락시"],
+             ["이자수익", "26,810", "(26,810)", "27,347", "(27,347)"], ["이자비용", "(92,814)", "92,814", "(51,899)", "51,899"]],
+            before="이자율이 1%(100bp) 변동하는 경우 예금 및 변동금리부 차입금으로부터 발생하는 이자수익과 이자비용의 영향",
+            unit_table="(단위: 백만원)")
+    hy = _t([["구분", "1% 상승시", "1% 하락시"], ["현금및현금성자산", "36,425", "(36,425)"],
+             ["차입금 및 사채", "(173,638)", "173,638"]],
+            before="이자율이 1% 변동시 이자율변동이 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    for x, want in ((sam, -33_597e6), (lg, -92_814e6), (hy, -173_638e6)):
+        (m,) = [k for k in ep.extract({"a.xml": x})["metrics"] if k.metric == "ir_sens_liab"]
+        assert m.value == want and m.change_pct == 1
+
+
+def test_ir_liability_absent_when_only_net_row():   # SK하이닉스 모양: 순효과 한 줄 → 부채 쪽 값 없음
+    x = _t([["구분", "100bp 상승시", "100bp 하락시"], ["법인세비용차감전순이익", "(41,875)", "41,875"]],
+           before="이자율이 100bp 하락 또는 상승시 변동금리부 차입금 및 금융자산으로부터의 순이자비용", unit_table="(단위: 백만원)")
+    res = ep.extract({"a.xml": x})
+    assert "ir_sens" in res["found"] and "ir_sens_liab" not in res["found"]
+
+
+def test_hedge_accounting_flag_and_text_without_numbers_parsed():
+    x = _t([["위험회피대상", "계약종류", "계약기간"],
+            ["고정금리외화사채(액면금액 USD 750,000)", "통화스왑계약", "2023.01.17 ~ 2026.01.17"]],
+           before="현금흐름위험회피회계를 적용한 통화스왑 및 이자율스왑 거래내역은 다음과 같습니다. 환율변동위험",
+           unit_table="(단위: 백만원)")
+    res = ep.extract({"a.xml": x})
+    assert "fx_hedge_acct" in res["found"] and "통화스왑" in res["hedge_text"]
+    assert not [m for m in res["metrics"] if m.metric not in ("fx_hedge_acct", "fx_derivative")]   # 계약 규모는 숫자로 저장 안 함

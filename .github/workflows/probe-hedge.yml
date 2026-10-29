@@ -26,10 +26,10 @@ jobs:
       - run: pip install -r requirements.txt
       - name: 점검
         run: |
-          for t in 005930 005380 051910 017670 010950 003490 034020 000660; do
-            python -m kic_data.cli probe-dart-doc --tickers "$t" --keys 헤지계약,변동금리차입 \
-              --max-tables 6 --max-rows 12 --max-chars 1500 > "probe_$t.txt" 2>&1 || true
-          done
+          # v2 추출기 결과 (DB 에 쓰지 않음): 업종이 다른 20개사
+          python -m kic_data.cli probe-dart-doc --extract \
+            --tickers 005930,000660,005380,000270,051910,006400,010950,096770,003490,034020,015760,017670,030200,033780,097950,271560,028260,009540,047050,011170 \
+            > probe_extract.txt 2>&1 || true
       - name: PR 댓글로 올리기
         run: |
           pr=$(gh pr list --head "$GITHUB_REF_NAME" --json number --jq '.[0].number')

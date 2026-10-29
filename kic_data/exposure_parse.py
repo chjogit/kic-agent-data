@@ -7,6 +7,10 @@
 - fx_derivative: 통화선도·통화스왑 등 외환 파생상품 사용 여부 (1/0) + 근거 문장
 - ir_sens      : 이자율 n%p(또는 n bp) 상승 시 손익 영향 (원) — 이자율위험 주석의 민감도 표 (변동금리 차입 노출)
 - price_text   : 사업의 내용 '가격변동추이·가격변동원인' 문단 발췌 (판가 전가력 판단 근거, 숫자로 바꾸지 않음)
+- ir_sens_liab : (v2) 이자율 민감도 표의 부채 쪽 행(금융부채·차입금·사채·이자비용)만의 영향 (원). 에이전트가
+                 |값| ÷ 변동폭 으로 변동금리부 부채 규모를 역산 (대용치)
+- fx_hedge_acct: (v2) 환율 관련 위험회피회계 적용 여부 (1) + 근거 문장
+- hedge_text   : (v2) 통화선도·스왑 계약 표의 앞 문맥과 첫 행 발췌 (계약 규모는 회사마다 표기·단위가 달라 숫자로 바꾸지 않음)
 
 원칙: 표에서 읽은 숫자와, 그 숫자로 한 단순 계산(비중)만 저장합니다. 못 찾으면 저장하지 않습니다(추정 없음).
 모든 행에 근거(표 앞 문맥, 파일, 표 번호)를 함께 남깁니다.
@@ -26,6 +30,7 @@ UNIT_KRW = {"원": 1, "천원": 1e3, "백만원": 1e6, "십억원": 1e9, "억원
 NUM_RE = re.compile(r"^[△▲(\-−]?\s*\(?\s*[\d,]+(?:\.\d+)?\s*\)?$")
 PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:p\s*)?(?:변동|상승|하락|증가|감소|절상|절하|강세|약세|만큼)")
 TOTAL_WORDS = ("합계", "총계", "소계", "계", "합 계", "총 계", "연결기준합계", "연결합계")
+PARSER_VERSION = "v2"   # v2 (10-29): ir_sens_liab · fx_hedge_acct · hedge_text 추가 → 낮은 버전으로 읽은 원문은 다시 읽음
 FX_DERIV_RE = re.compile(r"통화\s*선도|통화\s*스왑|통화\s*옵션|통화\s*이자율\s*스왑|선물환|외환\s*파생|NDF")
 
 
@@ -350,6 +355,51 @@ def ir_sensitivity(t: Table) -> list[Metric]:
     return [Metric("ir_sens", "ALL", v * f, _ir_change(b), _basis(b), t.unit, _evidence(t) or b[:300], t.index, t.file)]
 
 
+LIAB_ROW_RE = re.compile(r"부채|차입|사채|이자\s*비용")
+NOT_LIAB_RE = re.compile(r"자산|수익|예금|순효과|합계|총계|순\s*영향|전\s*기")
+
+
+def ir_liability(t: Table) -> list[Metric]:
+    """이자율 민감도 표에서 부채 쪽 행(금융부채·차입금 및 사채·이자비용)의 상승 시 영향만. 순효과 한 행뿐이면 없음.
+    예: 삼성전자 '금융부채 △33,597', LG화학 '이자비용 (92,814)', 현대차 '차입금 및 사채 (173,638)' (백만원, 1%p)."""
+    f = unit_factor(t.unit)
+    up = _up_col(t)
+    if f is None or up is None:
+        return []
+    b = _blob(t, 6)
+    for r in t.rows:
+        label = (r[0] if r else "").replace(" ", "")
+        if not LIAB_ROW_RE.search(label) or NOT_LIAB_RE.search(label) or up >= len(r):
+            continue
+        v = num(r[up])
+        if v is not None:
+            return [Metric("ir_sens_liab", "ALL", v * f, _ir_change(b), _basis(b), t.unit, _evidence(t) or b[:300],
+                           t.index, t.file)]
+    return []
+
+
+HEDGE_ACCT_RE = re.compile(r"위험\s*회피\s*회계")
+HEDGE_TABLE_RE = re.compile(r"통화\s*선도|통화\s*스왑|선물환|통화\s*옵션|통화\s*이자율\s*스왑")
+
+
+def fx_hedge_accounting(tables: list[Table]) -> Metric | None:
+    for t in tables:
+        b = _blob(t, 8)
+        if HEDGE_ACCT_RE.search(b) and re.search(r"통화|환율|외화|환위험", b):
+            return Metric("fx_hedge_acct", "ALL", 1.0, None, None, None, _evidence(t) or b[:300], t.index, t.file)
+    return None
+
+
+def hedge_text(tables: list[Table], width: int = 500) -> str:
+    """통화 파생 계약 표(계약 현황) 한 개의 앞 문맥 + 첫 행들. 위험관리 절·주석 표를 먼저."""
+    cands = [t for t in tables if HEDGE_TABLE_RE.search(_blob(t, 3))
+             and re.search(r"계약|약정|매입|매도|명목|평가", _blob(t, 3))]
+    if not cands:
+        return ""
+    t = min(cands, key=lambda x: (_section_rank(x), x.index))
+    return (t.context[-250:] + " " + t.text(5))[:width]
+
+
 # ---------------------------------------------------------------- 가격변동 문단 (판가 전가력 근거)
 
 PRICE_HEAD_RE = re.compile(r"(주요\s*)?(제품|원재료|원\s*재료)\s*(등의)?\s*가격\s*변동\s*(추이|원인)|가격\s*변동\s*원인")
@@ -414,6 +464,12 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
                 ms, _t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
                 metrics += ms
                 got.add("ir_sens")
+        if "ir_sens_liab" not in got:
+            cands = [(ms, t) for t in tables if _is_ir_sensitivity(t) for ms in [ir_liability(t)] if ms]
+            if cands:
+                ms, _t = min(cands, key=lambda c: (_section_rank(c[1]), c[1].index))
+                metrics += ms
+                got.add("ir_sens_liab")
         for t in tables:
             if "fx_pos" not in got and _is_fx_position(t):
                 ms = fx_position(t)
@@ -430,7 +486,15 @@ def extract(files: dict[str, str], revenue_krw: float | None = None) -> dict:
         metrics.append(d)
         got.add("fx_derivative")
         risk_text = (risk_text + " " + d.evidence).strip()
+    h = fx_hedge_accounting(all_tables)
+    if h:
+        metrics.append(h)
+        got.add("fx_hedge_acct")
+    hedge = hedge_text(all_tables)
+    if hedge:
+        got.add("hedge_text")
     prices = price_text(files)
     if prices:
         got.add("price_text")
-    return {"metrics": metrics, "risk_text": risk_text[-900:], "price_text": prices, "found": sorted(got)}
+    return {"metrics": metrics, "risk_text": risk_text[-900:], "price_text": prices, "hedge_text": hedge,
+            "found": sorted(got)}

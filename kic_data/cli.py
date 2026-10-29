@@ -657,6 +657,13 @@ def _probe_extract(args) -> int:
             if ir:
                 print(f"   ↳ 이자율 민감도 {ir.value/1e8:,.0f}억 ({ir.change_pct}%p {ir.basis}) 표#{ir.table_index} "
                       f"문맥={ir.evidence[-120:]!r}")
+            il = ms.get(("ir_sens_liab", "ALL"))
+            if il:
+                est = abs(il.value) / (il.change_pct / 100) if il.change_pct else None
+                print(f"   ↳ [v2] 부채 쪽 이자율 민감도 {il.value/1e8:,.0f}억 ({il.change_pct}%p) → 변동금리부 부채 역산 "
+                      f"{(est or 0)/1e12:,.2f}조 표#{il.table_index} 행근거={il.evidence[-100:]!r}")
+            ha = ms.get(("fx_hedge_acct", "ALL"))
+            print(f"   ↳ [v2] 위험회피회계 {'적용' if ha else '못 찾음'} · 헤지 발췌 {res.get('hedge_text', '')[:160]!r}")
             for txt in res.get("price_text", [])[:2]:
                 print(f"   ↳ 가격변동 발췌: {txt[:200]!r}")
             print(f"{ticker} {name} FY{fy}: {res['found']} | USD민감도="
@@ -739,8 +746,9 @@ def cmd_report_exposure(args) -> int:
                 _ok(f"KR:{ticker}", "사업보고서 접수번호 없음 (건너뜀)")
                 continue
             fy = reports[0][1]
-            if not getattr(args, "force", False) and db.report_parsed(conn, cid, fy) in {r[0] for r in reports if r[1] == fy}:
-                continue
+            if not getattr(args, "force", False) and db.report_parsed(conn, cid, fy, exposure_parse.PARSER_VERSION) \
+                    in {r[0] for r in reports if r[1] == fy}:
+                continue   # 같은 접수번호를 같은 파서 버전으로 이미 읽음 (버전이 오르면 다시 읽음)
             conn.commit()  # 원문(약 10MB)을 받는 동안 읽기 트랜잭션을 쥐고 있지 않게 (apply-schema 잠금 대기 방지)
             files, rcept, rdt, last_err = None, None, None, ""
             for rc, y, dt in reports:
@@ -756,13 +764,19 @@ def cmd_report_exposure(args) -> int:
                 bad += 1
                 continue
             res = exposure_parse.extract(files, db.annual_revenue(conn, cid, fy))
-            n = db.save_report_exposure(conn, cid, fy, rcept, res["metrics"], res["found"],
+            n = db.save_report_exposure(conn, cid, fy, rcept, res["metrics"],
+                                        res["found"] + [f"parser:{exposure_parse.PARSER_VERSION}"],
                                         "ok" if res["found"] else "not_found")
             if res["risk_text"]:
                 db.upsert_documents(conn, cid, "dart_report", [{
                     "title": f"FY{fy} 사업보고서 · 환위험 관리", "published_at": rdt,
                     "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}#fx-risk",
                     "summary": res["risk_text"][:500]}])
+            if res.get("hedge_text"):   # 환헤지 계약은 회사마다 표기·단위가 달라 숫자로 바꾸지 않고 원문 발췌만 근거로 둠
+                db.upsert_documents(conn, cid, "dart_report", [{
+                    "title": f"FY{fy} 사업보고서 · 환헤지 계약", "published_at": rdt,
+                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}#fx-hedge",
+                    "summary": res["hedge_text"][:500]}])
             if res.get("price_text"):   # 판가 전가력은 숫자로 바꾸지 않고 원문 발췌만 근거로 둠
                 db.upsert_documents(conn, cid, "dart_report", [{
                     "title": f"FY{fy} 사업보고서 · 가격변동 추이({i + 1})", "published_at": rdt,
