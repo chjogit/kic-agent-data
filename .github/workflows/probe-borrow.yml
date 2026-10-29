@@ -10,7 +10,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
@@ -73,7 +73,7 @@ jobs:
           from kic_data.http_util import make_session
           s = make_session()
           T = ("035250,051600,007070,018260,030000,004000,012750,"
-               "005930,000660,005380,000270,051910,006400,010950,096770,003490,034020,015760,017670,030200,033780,097950,271560,028260,009540,047050,011170").split(",")
+               "005930,005380,051910,010950,003490,015760,017670,033780").split(",")
           with db.connect() as conn, conn.cursor() as cur:
               cos = {c[1]: c for c in db.list_companies(conn, "KR")}
               old, reps = {}, {}
@@ -96,7 +96,7 @@ jobs:
                   print("   바뀐 값:", diff)
               print("   risk_text:", r["risk_text"][:160].replace("\n", " "))
           PY
-          python q.py > probe_doc.txt 2>&1 || true
+          timeout 35m python -u q.py > probe_doc.txt 2>&1 || true
       - name: PR 댓글로 올리기
         run: |
           pr=$(gh pr list --head "$GITHUB_REF_NAME" --json number --jq '.[0].number')
