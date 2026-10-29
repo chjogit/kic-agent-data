@@ -905,9 +905,9 @@ def cmd_probe_bond_issue(args) -> int:
     want = {t.strip() for t in args.tickers.split(",") if t.strip()}
     with db.connect() as conn:
         companies = [c for c in db.list_companies(conn, "KR") if c[1] in want]
-        crnos = _ensure_crnos(conn, s, companies)
-    for cid, ticker, name, _, _ in companies:
-        crno = crnos.get(cid)
+        conn.commit()
+    for cid, ticker, name, corp_code, _ in companies:
+        crno = dart.fetch_company(s, corp_code).get("jurir_no") if corp_code else None   # DB 에 쓰지 않음
         print(f"\n##### {ticker} {name} 법인등록번호 {'있음' if crno else '없음'}")
         if not crno:
             continue

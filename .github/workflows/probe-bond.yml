@@ -1,0 +1,38 @@
+# 임시 (10-29): 채권발행정보 원 응답 확인 (필드 이름·단위). DB 에 쓰지 않습니다. 병합 전에 지웁니다.
+name: probe-bond
+on:
+  push:
+    branches: [claude/fsc-bond-issue]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+      FSC_API_KEY: ${{ secrets.FSC_API_KEY }}
+      PYTHONIOENCODING: utf-8
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 점검
+        run: |
+          python -m kic_data.cli probe-bond-issue --tickers 005930,005380,007070,034020,015760,035250,051600 --rows 3 --max-chars 5000 > probe_bond.txt 2>&1 || true
+          python -m kic_data.cli probe-bond-issue --tickers 005380 --bas-dt $(date -d '-3 day' +%Y%m%d) --rows 2 > probe_bond_basdt.txt 2>&1 || true
+      - name: PR 댓글로 올리기
+        run: |
+          pr=$(gh pr list --head "$GITHUB_REF_NAME" --json number --jq '.[0].number')
+          [ -z "$pr" ] && { echo "PR 없음"; exit 0; }
+          for f in probe_bond*.txt; do
+            { echo "### probe ${f#probe_}"; echo '```'; head -c 60000 "$f"; echo; echo '```'; } > body.md
+            gh pr comment "$pr" --body-file body.md
+          done
