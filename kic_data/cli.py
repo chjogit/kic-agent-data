@@ -265,6 +265,38 @@ def cmd_news(args) -> int:
     return 0
 
 
+PERSON_NEWS_SOURCE = "naver_news_backfill"  # 정기 뉴스(naver_news)와 구분: 인물 기사 과거분
+
+
+def cmd_person_news(args) -> int:
+    """대주주·경영진 기사 과거분 (universe.PERSON_NEWS). rag.document source=naver_news_backfill 로 저장.
+    기간은 PERSON_NEWS_FROM~TO, 제목에 인물 이름이 그대로 있는 기사만."""
+    from .universe import PERSON_NEWS, PERSON_NEWS_FROM, PERSON_NEWS_TO, PERSON_NEWS_TOPICS
+
+    s = make_session()
+    since, until = date.fromisoformat(PERSON_NEWS_FROM), date.fromisoformat(PERSON_NEWS_TO)
+    topics = tuple(t for t in PERSON_NEWS_TOPICS) if getattr(args, "topics", True) else ("",)
+    bad = 0
+    with db.connect() as conn:
+        for cid, ticker, name, *_ in db.list_companies(conn, "KR"):
+            if ticker not in PERSON_NEWS:
+                continue
+            company, people = PERSON_NEWS[ticker]
+            for person in people:
+                try:
+                    rows, info = news.collect_person_news(s, company, person, since, until, topics,
+                                                          getattr(args, "pages", 10))
+                except RuntimeError as exc:
+                    _fail(f"KR:{ticker} {person}", str(exc))
+                    bad += 1
+                    continue
+                n = db.upsert_documents(conn, cid, PERSON_NEWS_SOURCE, rows)
+                first = min((r["published_at"] for r in rows), default=None)
+                _ok(f"KR:{ticker} {person}", f"{n}건 (가장 이른 기사 {first or '-'}, 최신순 검색이 닿은 날 "
+                    f"{info['oldest_seen'] or '-'}, 호출 {info['calls']}회, 검색어 '{company} {person} [주제어]')")
+    return 1 if bad else 0
+
+
 def cmd_community(args) -> int:
     """개인 투자자 반응: 네이버 블로그·카페글 (공식 검색 API)."""
     s = make_session()
@@ -1599,6 +1631,8 @@ def main(argv=None) -> int:
     sub.add_parser("sync-dart-codes").set_defaults(fn=cmd_sync_dart)
     a = sub.add_parser("collect-kr-prices"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_kr_prices)
     a = sub.add_parser("collect-us-prices"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_us_prices)
+    a = sub.add_parser("collect-person-news"); a.add_argument("--pages", type=int, default=10)
+    a.set_defaults(fn=cmd_person_news, topics=True)
     a = sub.add_parser("collect-news"); a.add_argument("--days", type=int, default=30); a.add_argument("--max-items", type=int, default=300); a.set_defaults(fn=cmd_news)
     a = sub.add_parser("embed-docs"); a.add_argument("--source", default="naver_news"); a.add_argument("--model", default="bge-m3"); a.add_argument("--batch", type=int, default=64); a.add_argument("--limit", type=int, default=None); a.set_defaults(fn=cmd_embed)
     a = sub.add_parser("collect-indices"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_indices)

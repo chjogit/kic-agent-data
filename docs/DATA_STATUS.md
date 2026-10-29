@@ -108,3 +108,12 @@
 - 테스트 10개 추가 (총 87개 통과).
 
 반영 순서: `apply-schema` → `collect-macro` → `build-peer-groups` → `build-features` → `export-features` → `status`
+
+## 대주주·경영진 기사 과거분 (2026-10-29, P05 요청)
+
+- 작업 `backfill-person-news` (1회), 명령 `python -m kic_data.cli collect-person-news`
+- 대상: `kic_data/universe.py` 의 `PERSON_NEWS` (6개사 23명, DART 반기보고서 명부의 개인, 법인 주주 제외)
+- 기간: 2026-01-01 ~ 2026-10-27, 검색어 `회사명 인물명` + 주제어(지분·배당·자사주·증여·재판), 최신순·관련도순
+- 필터: 제목에 인물 이름이 그대로 있는 기사만 (약칭·성·호칭 제외). 본문 없음 (제목·요약·URL·게시일)
+- 저장: `rag.document` **source = `naver_news_backfill`** (정기 뉴스 `naver_news` 와 구분). 같은 기사가 두 출처에 다 있을 수 있으니 URL 로 중복 제거해 쓰세요.
+- 한계: 네이버 검색 API 는 기간 지정이 없고 검색어당 1,000건까지라, 기사가 많은 인물(예: 이재용)은 1월까지 다 닿지 못할 수 있습니다. 작업 로그에 인물별 '가장 이른 기사'와 '최신순 검색이 닿은 날'을 남깁니다.
