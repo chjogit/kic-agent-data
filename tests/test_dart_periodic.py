@@ -67,3 +67,52 @@ def test_periodic_targets_latest_due_and_annual():
     assert cli.periodic_targets(date(2026, 11, 20)) == [(2026, "11014"), (2025, "11011")]
     assert cli.periodic_targets(date(2026, 4, 2)) == [(2025, "11011")]
     assert cli.periodic_targets(date(2026, 3, 1)) == [(2025, "11014"), (2024, "11011")]
+
+
+def test_borrow_kind_names():
+    k = dp.borrow_kind
+    assert [k(n) for n in ("단기차입금", "유동성장기차입금", "유동성사채", "장기차입금", "사채", "전환사채", "차입부채",
+                           "이자부차입금", "장기차입금 및 사채", "담보부사채")] == \
+        ["short", "current_lt", "current_lt", "long", "bond", "bond", "bank", "mixed", "long", "bond"]
+    for n in ("사채할인발행차금", "단기차입금의상환", "미지급이자", "장기대여금", "리스부채", "전환권대가", "단기차입금의 증가"):
+        assert k(n) is None, n
+
+
+def test_pick_borrowings_bs_only_and_duplicates_kept():
+    rows = [{"sj_div": "BS", "account_id": "ifrs-full_ShorttermBorrowings", "account_nm": "단기차입금", "amount": Decimal(3)},
+            {"sj_div": "BS", "account_id": "-표준계정코드 미사용-", "account_nm": "차입금", "amount": Decimal(4)},
+            {"sj_div": "BS", "account_id": "-표준계정코드 미사용-", "account_nm": "차입금", "amount": Decimal(5)},
+            {"sj_div": "CF", "account_id": "x", "account_nm": "단기차입금", "amount": Decimal(9)},
+            {"sj_div": "BS", "account_id": "x", "account_nm": "사채할인발행차금", "amount": Decimal(-1)},
+            {"sj_div": "BS", "account_id": "y", "account_nm": "사채", "amount": None}]
+    got = dp.pick_borrowings(rows)
+    assert [r["account_nm"] for r in got] == ["단기차입금", "차입금", "차입금#2"]
+    assert sum(r["amount"] for r in got) == 12
+
+
+def test_fetch_periodic_shares_one_statement_call(monkeypatch):
+    calls = []
+    stmt = [{"sj_div": "BS", "account_id": "a", "account_nm": "매출채권", "amount": Decimal(7), "fs_div": "CFS"},
+            {"sj_div": "BS", "account_id": "b", "account_nm": "장기차입금", "amount": Decimal(8), "fs_div": "CFS"}]
+
+    def fake(s, corp, year, report_code, fs_div):
+        calls.append(fs_div)
+        return stmt if fs_div == "CFS" else []
+    monkeypatch.setattr(cli.dart, "fetch_financials", fake)
+    cli._fs_cache.clear()
+    rec = cli._fetch_periodic(None, "receivable", "001", 2025, "11011")
+    bor = cli._fetch_periodic(None, "borrowing", "001", 2025, "11011")
+    assert rec[0]["amount"] == 7 and [r["amount"] for r in bor] == [8]
+    assert bor[0]["period_end"] == date(2025, 12, 31) and calls == ["CFS"]
+
+
+def test_fetch_periodic_borrowing_no_debt_stays_on_consolidated(monkeypatch):
+    calls = []
+
+    def fake(s, corp, year, report_code, fs_div):
+        calls.append(fs_div)
+        return [{"sj_div": "BS", "account_id": "a", "account_nm": "현금", "amount": Decimal(1)}] if fs_div == "CFS" else \
+            [{"sj_div": "BS", "account_id": "b", "account_nm": "단기차입금", "amount": Decimal(2)}]
+    monkeypatch.setattr(cli.dart, "fetch_financials", fake)
+    cli._fs_cache.clear()
+    assert cli._fetch_periodic(None, "borrowing", "002", 2025, "11011") == [] and calls == ["CFS"]

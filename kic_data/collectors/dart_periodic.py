@@ -141,6 +141,46 @@ def pick_receivable(rows: list[dict]) -> dict | None:
     return None
 
 
+# 재무상태표 차입 계정(총차입금 용). 이름에서 공백을 빼고 맞춥니다. 리스부채는 넣지 않습니다.
+BORROW_RE = re.compile(r"차입금|차입부채|사채")
+BORROW_NOT_RE = re.compile(r"할인|할증|상환|증가|감소|발행차금|미지급|평가|손익|손실|이익|조정|파생|전환권|교환권|"
+                           r"신주인수권|대여|채권|예수")
+
+
+def borrow_kind(account_nm: str) -> str | None:
+    """차입 계정 구분: short(단기) · current_lt(유동성 장기) · long(장기) · bond(사채) · bank(금융업 차입부채) ·
+    mixed(차입금·사채 합본, 유동/비유동 모름). 차입 계정이 아니면 None."""
+    nm = (account_nm or "").replace(" ", "")
+    if not BORROW_RE.search(nm) or BORROW_NOT_RE.search(nm):
+        return None
+    if "차입부채" in nm:
+        return "bank"
+    if nm.startswith("유동성") or (nm.startswith("유동") and "장기" in nm):
+        return "current_lt"
+    if nm.startswith(("단기", "유동")):
+        return "short"
+    if "차입금" not in nm:
+        return "bond"
+    if nm.startswith(("장기", "비유동")):
+        return "long"
+    return "mixed"
+
+
+def pick_borrowings(rows: list[dict]) -> list[dict]:
+    """전체 재무제표에서 재무상태표 차입 계정 행들(총차입금 = 합). 한 응답(연결 또는 별도)만 넘깁니다."""
+    out, seen = [], set()
+    for r in rows:
+        if r.get("sj_div") != "BS" or r.get("amount") is None or not borrow_kind(r.get("account_nm")):
+            continue
+        nm, n = r.get("account_nm") or "", 1
+        while (r.get("account_id") or "", nm) in seen:  # 같은 ID·이름이 두 번(유동·비유동) 나오면 순번을 붙여 둘 다 남김
+            n += 1
+            nm = f"{r.get('account_nm')}#{n}"
+        seen.add((r.get("account_id") or "", nm))
+        out.append({**r, "account_nm": nm})
+    return out
+
+
 def _params(corp_code: str, year: int, reprt_code: str) -> dict:
     return {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
             "bsns_year": str(year), "reprt_code": reprt_code}

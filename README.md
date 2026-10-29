@@ -31,7 +31,7 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 해외 ETF 시세 | yfinance (비공식): SPY·VOO·QQQ. NAV 없음, `market='US'`·`currency='USD'` | `core.etf_price_daily` |
 | 해외 주식 시세, 시장 지수 | Yahoo Finance (`yfinance`, 비공식 라이브러리 · 개발·연구용) | `core.price_daily`, `core.market_index_daily` |
 | 국내 재무제표·공시·기업개황 | 금융감독원 OpenDART (`corpCode`, `company`, `fnlttSinglAcntAll`, `list`) | `core.financial_fact`, `core.disclosure`, `core.company` |
-| 국내 차입 조건 (회사채·CP·단기사채 미상환 잔액 만기 구간, 채무증권 발행 이자율·만기·신용등급), 매출채권 | OpenDART 정기보고서 주요정보 (`cprndNrdmpBlce`, `entrprsBilScritsNrdmpBlce`, `srtpdPsndbtNrdmpBlce`, `detScritsIsuAcmslt`) + `fnlttSinglAcntAll` | `core.debt_balance`, `core.debt_issue`, `core.financial_fact` (`dart_full`), 뷰 `core.v_debt_maturity`·`core.v_dso` |
+| 국내 차입 조건 (회사채·CP·단기사채 미상환 잔액 만기 구간, 채무증권 발행 이자율·만기·신용등급), 매출채권, 총차입금 | OpenDART 정기보고서 주요정보 (`cprndNrdmpBlce`, `entrprsBilScritsNrdmpBlce`, `srtpdPsndbtNrdmpBlce`, `detScritsIsuAcmslt`) + `fnlttSinglAcntAll` | `core.debt_balance`, `core.debt_issue`, `core.financial_fact` (`dart_full`·`dart_borrow`), 뷰 `core.v_debt_maturity`·`core.v_dso`·`core.v_borrowings` |
 | 사업보고서 원문 노출 (환율·이자율 민감도, 외화 자산·부채, 수출 비중, 외환 파생, 가격변동 문단 발췌) | OpenDART 공시서류 원본파일 (`document.xml`), 규칙 기반 추출 | `core.report_exposure`, `rag.document` (`dart_report`) |
 | 해외 재무제표·제출서류 | 미국 SEC EDGAR (`company_tickers`, `submissions`, XBRL `companyfacts`) | `core.financial_fact`, `core.disclosure`, `core.company` |
 | 국내 거시 (기준금리·원/달러) | 한국은행 ECOS (`StatisticSearch`) | `core.macro_series`, `core.macro_obs` |
@@ -45,7 +45,7 @@ GitHub Actions 가 매시간 `tick` 을 실행하면, 주기가 돌아온 작업
 | 국내 투자자별 순매수 (외국인·기관·개인, 수량), 외국인 보유율 | 네이버 증권 모바일 공개 API (`m.stock.naver.com/api/stock/{종목}/trend`, 비공식·로그인 불필요) | `core.investor_flow_daily` |
 | 코스피 종목별 대차거래·대차잔고 (공매도 대용, 빠진 거래일만 매시간 40일씩) | 금융위원회 주식대차거래정보 (공공데이터포털 `GetCMStckLnbInfoService`, 공공누리 4유형) | `core.stock_lending_daily` |
 
-차입 조건의 미상환 잔액 금액은 OpenDART 가 보고서 표 숫자만 주고 단위(원·백만원)를 알려 주지 않아 `amount_raw` 로 두고, 단위가 필요 없는 1년 내 만기 비중(`v_debt_maturity.within_1y_share`)을 씁니다. 매출채권 회수기간(`v_dso.dso_days`)은 기말 매출채권 ÷ 그 기말까지 4개 분기 매출 × 365 입니다(다중회사 주요계정 `fnlttMultiAcnt` 에는 매출채권이 없어 전체 재무제표를 한 번 더 받음). 판가 전가력 같은 정성 항목은 숫자로 만들지 않고 원문 발췌만 근거로 둡니다.
+차입 조건의 미상환 잔액 금액은 OpenDART 가 보고서 표 숫자만 주고 단위(원·백만원)를 알려 주지 않아 `amount_raw` 로 두고, 단위가 필요 없는 1년 내 만기 비중(`v_debt_maturity.within_1y_share`)을 씁니다. 매출채권 회수기간(`v_dso.dso_days`)은 기말 매출채권 ÷ 그 기말까지 4개 분기 매출 × 365 입니다(다중회사 주요계정 `fnlttMultiAcnt` 에는 매출채권이 없어 전체 재무제표를 한 번 더 받음). 총차입금(`v_borrowings.total_borrowings`, 원)은 같은 전체 재무제표 응답에서 재무상태표 차입 계정(단기·유동성장기·장기차입금, 사채·전환사채 등)을 더한 값입니다. 리스부채는 넣지 않고, 금융업의 '차입부채'는 `bank_borrow` 로 따로 둡니다. 사채·CP 미상환 잔액 공시가 없는 회사(은행 차입만 있는 회사)도 여기서 차입 규모를 봅니다. 판가 전가력 같은 정성 항목은 숫자로 만들지 않고 원문 발췌만 근거로 둡니다.
 
 감성 점수(`core.doc_sentiment`), 분기 단독 값·TTM(`core.financial_quarter`, `core.v_ttm`), Peer Group, 5개 관점 지표(`core.feature_snapshot`)는
 위 테이블에서 DB 안에서 계산한 파생 값입니다. 각 출처의 이용 조건은 제공 기관 약관을 따릅니다.

@@ -788,7 +788,9 @@ def cmd_report_exposure(args) -> int:
 
 # 정기보고서 기말일 (12월 결산 기준. KOSPI 200 대부분이 12월 결산)
 PERIOD_END = {"11013": (3, 31), "11012": (6, 30), "11014": (9, 30), "11011": (12, 31)}
-DEBT_APIS = ("bond", "cp", "stb", "issue", "receivable")
+DEBT_APIS = ("bond", "cp", "stb", "issue", "receivable", "borrowing")
+FS_APIS = ("receivable", "borrowing")  # 전체 재무제표(fnlttSinglAcntAll) 한 응답에서 뽑음
+_fs_cache: dict = {}
 
 
 def periodic_targets(today: date) -> list[tuple[int, str]]:
@@ -807,13 +809,21 @@ def _fetch_periodic(s, api: str, corp_code: str, year: int, code: str) -> list[d
 
     if api == "issue":
         return dart_periodic.fetch_issues(s, corp_code, year, code)
-    if api != "receivable":
+    if api not in FS_APIS:
         return dart_periodic.fetch_balance(s, api, corp_code, year, code)
     m, d = PERIOD_END[code]
+    pick = dart_periodic.pick_receivable if api == "receivable" else dart_periodic.pick_borrowings
     for fs_div in ("CFS", "OFS"):  # 종속회사가 없으면 연결 재무제표가 없음
-        r = dart_periodic.pick_receivable(dart.fetch_financials(s, corp_code, year, report_code=code, fs_div=fs_div))
-        if r:
-            return [{**r, "period_end": date(year, m, d)}]
+        key = (corp_code, year, code, fs_div)
+        if key not in _fs_cache:  # 매출채권·차입금이 같은 응답을 쓰므로 한 번만 부름
+            _fs_cache.clear()
+            _fs_cache[key] = dart.fetch_financials(s, corp_code, year, report_code=code, fs_div=fs_div)
+        if api == "receivable":
+            r = pick(_fs_cache[key])
+            if r:
+                return [{**r, "period_end": date(year, m, d)}]
+        elif _fs_cache[key]:  # 연결 재무제표가 있으면 차입 계정이 없어도(무차입) 별도로 넘어가지 않음
+            return [{**r, "period_end": date(year, m, d)} for r in pick(_fs_cache[key])]
     return []
 
 

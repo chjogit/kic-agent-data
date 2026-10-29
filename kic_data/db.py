@@ -181,7 +181,7 @@ def periodic_fetched(conn, company_id: int) -> set[tuple]:
 
 def save_periodic(conn, company_id: int, api: str, fiscal_year: int, reprt_code: str, rows: list[dict]) -> int:
     """정기보고서 주요정보 한 묶음을 통째로 교체하고 받은 기록을 남깁니다 (한 트랜잭션).
-    api: bond·cp·stb → core.debt_balance, issue → core.debt_issue, receivable → core.financial_fact(dart_full)."""
+    api: bond·cp·stb → core.debt_balance, issue → core.debt_issue, receivable → core.financial_fact(dart_full), borrowing → core.financial_fact(dart_borrow)."""
     key = [company_id, fiscal_year, reprt_code]
     with conn.cursor() as cur:
         if api in ("bond", "cp", "stb"):
@@ -199,14 +199,15 @@ def save_periodic(conn, company_id: int, api: str, fiscal_year: int, reprt_code:
                 f"INSERT INTO core.debt_issue (company_id, fiscal_year, reprt_code, {', '.join(cols)}) "
                 f"VALUES ({', '.join(['%s'] * (3 + len(cols)))}) ON CONFLICT DO NOTHING",
                 [key + [r[c] for c in cols] for r in rows])
-        elif api == "receivable":
+        elif api in ("receivable", "borrowing"):
+            src = "dart_full" if api == "receivable" else "dart_borrow"
             cur.execute("DELETE FROM core.financial_fact WHERE company_id = %s AND fiscal_year = %s AND report_code = %s "
-                        "AND source = 'dart_full'", key)
+                        "AND source = %s", key + [src])
             cur.executemany(
                 "INSERT INTO core.financial_fact (company_id, source, fiscal_year, report_code, fs_div, sj_div, "
                 "account_id, account_nm, amount, currency, rcept_no, period_end) "
-                "VALUES (%s, 'dart_full', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                [[company_id, fiscal_year, reprt_code, r["fs_div"], r["sj_div"], r["account_id"], r["account_nm"],
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                [[company_id, src, fiscal_year, reprt_code, r["fs_div"], r["sj_div"], r["account_id"], r["account_nm"],
                   r["amount"], r["currency"], r["rcept_no"], r["period_end"]] for r in rows])
         else:
             raise ValueError(api)
