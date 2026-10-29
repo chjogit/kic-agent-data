@@ -172,3 +172,46 @@ def collect_company_news(
                 by_url[row["url"]] = row
     rows = sorted(by_url.values(), key=lambda r: r["published_at"] or date.min, reverse=True)
     return rows[:max_items]
+
+
+def collect_person_news(session, company: str, person: str, since: date, until: date,
+                        topics: tuple[str, ...] = ("",), pages: int = 10) -> tuple[list[dict], dict]:
+    """'회사명 인물명 [주제어]' 를 최신순·관련도순으로 최대 pages 페이지(검색 API 한계 1,000건)씩 모읍니다.
+
+    제목에 인물 이름이 그대로 들어간 기사만, since~until 사이만, URL·제목 키로 중복 제거.
+    반환: (기사 목록, {"calls": 호출 수, "oldest_seen": 최신순 검색에서 닿은 가장 오래된 날짜})
+    네이버 검색 API 는 기간 지정이 없어, 기사가 많은 인물은 최신순으로 since 까지 닿지 못할 수 있습니다
+    (관련도순·주제어 검색으로 보완). oldest_seen 으로 어디까지 닿았는지 확인합니다.
+    """
+    by_url: dict[str, dict] = {}
+    seen_titles: set[str] = set()
+    calls, oldest = 0, None
+    for topic in topics:
+        q = f"{company} {person} {topic}".strip()
+        for sort in ("date", "sim"):
+            for page_no in range(pages):
+                page = fetch_news(session, q, display=100, start=1 + 100 * page_no, sort=sort)
+                calls += 1
+                if not page:
+                    break
+                dates = [r["published_at"] for r in page if r["published_at"]]
+                if sort == "date" and dates:
+                    oldest = min(dates) if oldest is None else min(oldest, min(dates))
+                for row in page:
+                    d = row["published_at"]
+                    if d is None or d < since or d > until or person not in row["title"]:
+                        continue
+                    if row["url"] in by_url:
+                        continue
+                    key = _title_key(row["title"])
+                    if key in seen_titles:
+                        continue
+                    seen_titles.add(key)
+                    by_url[row["url"]] = row
+                if sort == "date" and dates and max(dates) < since:
+                    break  # 최신순이라 이 페이지가 전부 기간 앞이면 더 볼 필요 없음
+                if len(page) < 100:
+                    break
+    rows = sorted(by_url.values(), key=lambda r: r["published_at"], reverse=True)
+    return rows, {"calls": calls, "oldest_seen": oldest}
+

@@ -120,6 +120,9 @@ JOBS: list[Job] = [
         {"days": 30, "sources": "naver_blog,naver_cafe", "pages": 10, "only_missing": True}, every=ONCE,
         needs=DB + NAVER, group="과거분(1회)"),
     # ↑ 검색어 별칭·종목명 단독 검색·광고어 필터를 고친 뒤(10-29) 0건이던 종목(SKIET·코스모화학·DB손해보험 등)만 다시 받기
+    Job("backfill-person-news", "대주주·경영진 기사 2026-01~10 (P05)", "cmd_person_news", {"pages": 10, "topics": True},
+        every=ONCE, needs=DB + NAVER, split=("KR",), chunk=60, group="과거분(1회)"),
+    # ↑ 6개사 23명 × 검색어 6개 × 정렬 2 × 최대 10페이지 ≈ 최대 2,800회 1번 (네이버 검색 하루 25,000회)
     Job("backfill-trends", "검색 관심도 1년", "cmd_trends", {"days": 365}, every=ONCE, needs=DB,
         needs_any=NEWS_KEYS, group="과거분(1회)"),
     Job("backfill-customs", "관세청 반도체 수출입 5년", "cmd_customs", {"from_ym": _ym_ago(60), "hs": HS_SEMI}, every=ONCE,
