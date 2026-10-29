@@ -258,8 +258,22 @@ def test_v3_fx_risk_narrative_from_xbrl_description_table():   # 삼성SDS '32. 
 
 
 def test_v3_fx_risk_body_fallback_and_title_only_skipped():
-    body = ("<P>나. 환위험 관리</P><P>환위험은 외화로 표시된 거래에서 발생합니다. 회사는 국내 영업 비중이 높아 외화 거래가 적고, "
+    body = ("<P>손상검사에서 환 위험은 사용가치에 영향을 미칠 수 있습니다. 이 문장은 위험관리 절 밖이라 잡지 않아야 합니다. "
+            "기후 관련 가정과 배출 비용 증가, 수요 변화 등을 함께 고려하였습니다.</P>"
+            "<P>5. 위험관리 및 파생거래</P><P>나. 환위험 관리</P><P>환위험은 외화로 표시된 거래에서 발생합니다. 회사는 국내 영업 비중이 높아 외화 거래가 적고, "
             "외화 예금과 외화 매출채권 규모가 크지 않아 환율 변동의 영향은 제한적입니다. 필요시 통화선도 계약을 검토합니다.</P>")
     res = ep.extract({"a.xml": body})
     assert res["risk_text"].startswith("환위험 관리") and "제한적" in res["risk_text"]
     assert ep.extract({"a.xml": "<P>환위험 관리</P>"})["risk_text"] == ""
+
+
+def test_v3_relaxed_rules_do_not_change_tables_v2_already_found():
+    """v3 넓힌 규칙은 v2 규칙으로 한 표도 못 찾을 때만: 사업의 내용 표(v2)와 연결 주석 XBRL 표(v3 전용)가 함께 있으면 v2 표."""
+    v2 = _t([["구 분", "10% 상승시", "10% 하락시"], ["USD", "100", "(100)"]],
+            before="환율이 10% 변동시 법인세비용차감전순이익에 미치는 영향", unit_table="(단위: 백만원)")
+    unit = "<TABLE><TR><TD>외화환율변동의 민감도분석에 대한 공시</TD></TR><TR><TD>당기</TD><TD>(단위 : 원)</TD></TR></TABLE>"
+    xbrl = "<TITLE>34. 위험관리 (연결)</TITLE>" + unit + _t(
+        [["", "환위험"], ["외화환율변동의 합리적인 범위 내에서의 발생가능한 0.1 증가율", "0.1"],
+         ["법인세비용차감전순손익 증가(감소)", "999,000,000"]])
+    m = [k for k in ep.extract({"a.xml": "<TITLE>위험관리 및 파생거래</TITLE>" + v2 + xbrl})["metrics"] if k.metric == "fx_sens"]
+    assert [(k.currency, k.value) for k in m] == [("USD", 100e6)]

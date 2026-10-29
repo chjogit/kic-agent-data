@@ -119,11 +119,14 @@ def test_fetch_periodic_borrowing_no_debt_stays_on_consolidated(monkeypatch):
     assert cli._fetch_periodic(None, "borrowing", "002", 2025, "11011") == [] and calls == ["CFS"]
 
 
-def test_pick_borrowings_liability_side_only():
-    rows = [{"sj_div": "BS", "account_id": "a", "account_nm": "전환사채", "amount": Decimal(1)},   # 자산 쪽 투자
-            {"sj_div": "BS", "account_id": "t", "account_nm": "자산총계", "amount": Decimal(10)},
-            {"sj_div": "BS", "account_id": "b", "account_nm": "단기차입금", "amount": Decimal(2)},
-            {"sj_div": "BS", "account_id": "u", "account_nm": "부채총계", "amount": Decimal(5)},
-            {"sj_div": "BS", "account_id": "c", "account_nm": "사채", "amount": Decimal(3)}]
-    assert [r["amount"] for r in dp.pick_borrowings(rows)] == [2]
-    assert [r["amount"] for r in dp.pick_borrowings([rows[0], rows[2]])] == [1, 2]   # 총계 행이 없으면 전체
+def test_pick_borrowings_skips_asset_side_rows():
+    rows = [{"sj_div": "BS", "account_id": "ifrs-full_Assets", "account_nm": "자산총계", "amount": Decimal(10)},
+            {"sj_div": "BS", "account_id": "dart_InvestmentsInConvertibleBonds", "account_nm": "전환사채", "amount": Decimal(1)},
+            {"sj_div": "BS", "account_id": "-표준계정코드 미사용-", "account_nm": "전환사채투자", "amount": Decimal(1)},
+            {"sj_div": "BS", "account_id": "ifrs-full_Equity", "account_nm": "자본총계", "amount": Decimal(5)},
+            {"sj_div": "BS", "account_id": "ifrs-full_ShorttermBorrowings", "account_nm": "단기차입금", "amount": Decimal(2)},
+            {"sj_div": "BS", "account_id": "ifrs-full_Liabilities", "account_nm": "부채총계", "amount": Decimal(5)},
+            {"sj_div": "BS", "account_id": "ifrs-full_NoncurrentPortionOfNoncurrentLoansReceived", "account_nm": "장기차입금",
+             "amount": Decimal(3)},   # 실제 응답처럼 부채총계 뒤에 오는 비유동 행도 남김
+            {"sj_div": "BS", "account_id": "x", "account_nm": "기타 유동 금융부채", "amount": Decimal(9)}]
+    assert [r["amount"] for r in dp.pick_borrowings(rows)] == [2, 3]

@@ -144,7 +144,10 @@ def pick_receivable(rows: list[dict]) -> dict | None:
 # 재무상태표 차입 계정(총차입금 용). 이름에서 공백을 빼고 맞춥니다. 리스부채는 넣지 않습니다.
 BORROW_RE = re.compile(r"차입금|차입부채|사채")
 BORROW_NOT_RE = re.compile(r"할인|할증|상환|증가|감소|발행차금|미지급|평가|손익|손실|이익|조정|파생|전환권|교환권|"
-                           r"신주인수권|대여|채권|예수")
+                           r"신주인수권|대여|채권|예수|투자|자산")
+
+
+ASSET_ID_RE = re.compile(r"Receivable|Investment|Asset", re.I)
 
 
 def borrow_kind(account_nm: str) -> str | None:
@@ -169,12 +172,10 @@ def borrow_kind(account_nm: str) -> str | None:
 
 def pick_borrowings(rows: list[dict]) -> list[dict]:
     """전체 재무제표에서 재무상태표 차입 계정 행들(총차입금 = 합). 한 응답(연결 또는 별도)만 넘깁니다.
-    응답은 표 순서(자산 → 자산총계 → 부채 → 부채총계)라, 자산총계와 부채총계 사이 행만 봅니다
-    (자산 쪽 '전환사채' 투자 같은 행을 차입으로 잡지 않게). 두 행을 못 찾으면 전체에서 고릅니다."""
-    bs = [r for r in rows if r.get("sj_div") == "BS"]
-    names = [(r.get("account_nm") or "").replace(" ", "") for r in bs]
-    if "자산총계" in names and "부채총계" in names and names.index("자산총계") < names.index("부채총계"):
-        bs = bs[names.index("자산총계") + 1:names.index("부채총계")]
+    응답 행 순서는 자산·부채 순이 아니라서(자본총계 뒤에 부채가 오기도 함) 순서로 쪽을 가르지 않고,
+    계정 ID·이름에 자산 표시(Receivable·Investment·Asset, '투자'·'자산')가 있으면 뺍니다.
+    한국전력·셀트리온처럼 차입금을 '기타 금융부채'에 합쳐 적는 회사는 행이 없으므로 총차입금은 미확인으로 남습니다."""
+    bs = [r for r in rows if r.get("sj_div") == "BS" and not ASSET_ID_RE.search(r.get("account_id") or "")]
     out, seen = [], set()
     for r in bs:
         if r.get("sj_div") != "BS" or r.get("amount") is None or not borrow_kind(r.get("account_nm")):
