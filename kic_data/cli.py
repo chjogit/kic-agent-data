@@ -608,6 +608,9 @@ PROBE_KEYS = {
     "수출내수": (("수출",), ("내수", "국내")),
     "지역별": (("지역",), ("국내", "해외", "아시아", "미주", "유럽", "중국")),
     "파생헤지": (("통화선도", "통화스왑", "위험회피", "파생상품"), ("",)),
+    # 10-29: 헤지 규모·차입 금리 구조 (에이전트 1 미확인 전제 D1·D2)
+    "헤지계약": (("통화선도", "통화스왑", "선물환", "통화옵션", "통화이자율스왑"), ("계약금액", "약정", "매입", "매도", "명목")),
+    "변동금리차입": (("변동금리", "변동이자율", "고정금리", "고정이자율"), ("차입", "부채", "사채", "금액")),
 }
 
 
@@ -709,8 +712,9 @@ def cmd_probe_dart_doc(args) -> int:
             for name, text in files.items():
                 for tb in dart_doc.tables_from_xml(text, name):
                     blob = tb.context[-200:] + " " + tb.text(6)
+                    keys = [k.strip() for k in (args.keys or "").split(",") if k.strip()] or list(PROBE_KEYS)
                     hits = [k for k, (a, b) in PROBE_KEYS.items()
-                            if any(x in blob for x in a) and any(y in blob for y in b)]
+                            if k in keys and any(x in blob for x in a) and any(y in blob for y in b)]
                     if not hits or shown >= args.max_tables:
                         continue
                     shown += 1
@@ -1492,6 +1496,7 @@ def main(argv=None) -> int:
     a.add_argument("--max-tables", type=int, default=25)
     a.add_argument("--max-rows", type=int, default=14)
     a.add_argument("--max-chars", type=int, default=1800)
+    a.add_argument("--keys", default="", help="PROBE_KEYS 중 볼 것만 (쉼표). 비우면 전부")
     a.add_argument("--extract", action="store_true", help="추출기 결과와 실패 사례 출력")
     a.add_argument("--show-misses", action="store_true")
     a.add_argument("--limit", type=int, default=1000)
