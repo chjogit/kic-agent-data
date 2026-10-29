@@ -27,28 +27,24 @@ jobs:
         run: |
           git fetch -q origin main && mkdir -p m && git --work-tree=m checkout origin/main -- kic_data && git reset -q
           cat > cmp.py <<'PY'
-          import sys, importlib
-          from kic_data import db
+          import sys
+          from kic_data import db, exposure_parse as ep
           from kic_data.collectors import dart_doc
           from kic_data.http_util import make_session
+          print("module:", ep.__file__, ep.PARSER_VERSION)
           s = make_session()
           with db.connect() as conn:
               cos = {c[1]: c for c in db.list_companies(conn, "KR")}
-              reps = {t: db.annual_reports(conn, cos[t][0]) for t in ("003490",)}
-          files = dart_doc.fetch_document(s, reps["003490"][0][0])
-          import kic_data.exposure_parse as new
-          sys.path.insert(0, "m"); [sys.modules.pop(k) for k in list(sys.modules) if k.startswith("kic_data")]
-          import kic_data.exposure_parse as old
-          from kic_data.collectors import dart_doc as dd_old
-          print("old module:", old.__file__, old.PARSER_VERSION)
-          for name, mod, dd in (("main(v2)", old, dd_old), ("branch(v3)", new, dart_doc)):
-              r = mod.extract(files)
-              print(name, [(m.metric, m.currency, m.value, m.table_index, m.file) for m in r["metrics"] if m.metric == "fx_sens"])
+              rep = db.annual_reports(conn, cos["003490"][0])[0][0]
+          files = dart_doc.fetch_document(s, rep)
+          r = ep.extract(files)
+          print([(m.metric, m.currency, m.value, m.table_index, m.file) for m in r["metrics"] if m.metric in ("fx_sens", "ir_sens")])
           for name, text in files.items():
               for t in dart_doc.tables_from_xml(text, name):
-                  if new._is_sensitivity(t):
+                  if ep._is_sensitivity(t):
                       print("후보", name, t.index, t.unit, (t.extra or {}).get("section"), "|", t.context[-120:], "|", t.text(4)[:300].replace("\n", " / "))
           PY
+          (cd m && cp ../cmp.py . && cp ../requirements.txt . 2>/dev/null; python cmp.py) > probe_cmp_main.txt 2>&1 || true
           python cmp.py > probe_cmp.txt 2>&1 || true
       - name: PR 댓글로 올리기
         run: |
