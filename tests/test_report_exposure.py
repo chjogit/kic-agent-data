@@ -287,6 +287,9 @@ def test_v4_hedge_accounting_needs_currency_in_same_sentence():   # 삼성전자
     policy = "<TITLE>1. 개요 (연결)</TITLE>" + _t([["구분", "내용"], ["외화환산", "환율"]],
                                                   before="연결실체는 통화선도에 대해 위험회피회계를 적용할 수 있습니다.")
     assert "fx_hedge_acct" not in ep.extract({"a.xml": policy})["found"]
+    ref = _t([["구분", "당기"], ["외환차이", "1"]],
+             before="(나) 특정 외화위험을 회피하기 위한 거래에서 발생하는 외환차이(위험회피회계정책에 대해서는 주석 3.(23) 참조)")
+    assert "fx_hedge_acct" not in ep.extract({"a.xml": ref})["found"]   # 한국전력
     ok = "<TITLE>36. 위험관리 (연결)</TITLE>" + _t([["구분", "당기"], ["통화스왑", "1"]],
                                                    before="연결실체는 외화차입금의 현금흐름 변동위험을 회피하기 위하여 통화스왑을 이용한 현금흐름위험회피회계를 적용하고 있습니다.")
     res = ep.extract({"a.xml": ok})

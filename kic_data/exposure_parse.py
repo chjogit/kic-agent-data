@@ -409,6 +409,7 @@ HEDGE_TABLE_RE = re.compile(r"통화\s*선도|통화\s*스왑|선물환|통화\s
 
 HEDGE_CCY_RE = re.compile(r"통화|환율|외화|환위험|외환|해외사업장")
 POLICY_SECTION_RE = re.compile(r"개요|작성\s*기준|회계\s*정책")
+POLICY_SENT_RE = re.compile(r"정책\s*(에\s*대해서는|은|는)?[^.]{0,20}(참조|참고)|주석\s*[\d.()]+\s*참조")  # '위험회피회계정책은 주석 3 참조'(한국전력)
 
 
 def _sentences(text: str) -> list[str]:
@@ -423,7 +424,8 @@ def fx_hedge_accounting(tables: list[Table]) -> Metric | None:
         if POLICY_SECTION_RE.search((t.extra or {}).get("section", "")):
             continue
         for sent in _sentences(_blob(t, 8)):
-            if HEDGE_ACCT_RE.search(sent) and HEDGE_CCY_RE.search(sent) and not HEDGE_NEG_RE.search(sent):
+            if HEDGE_ACCT_RE.search(sent) and HEDGE_CCY_RE.search(sent) and not HEDGE_NEG_RE.search(sent) \
+                    and not POLICY_SENT_RE.search(sent):
                 return Metric("fx_hedge_acct", "ALL", 1.0, None, None, None, sent[:300], t.index, t.file)
     return None
 
