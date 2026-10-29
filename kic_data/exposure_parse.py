@@ -379,13 +379,14 @@ def ir_liability(t: Table) -> list[Metric]:
 
 
 HEDGE_ACCT_RE = re.compile(r"위험\s*회피\s*회계")
+HEDGE_NEG_RE = re.compile(r"위험\s*회피\s*회계[^.。]{0,30}(적용하지|미적용|적용되지|적용하고\s*있지\s*않)")
 HEDGE_TABLE_RE = re.compile(r"통화\s*선도|통화\s*스왑|선물환|통화\s*옵션|통화\s*이자율\s*스왑")
 
 
 def fx_hedge_accounting(tables: list[Table]) -> Metric | None:
     for t in tables:
         b = _blob(t, 8)
-        if HEDGE_ACCT_RE.search(b) and re.search(r"통화|환율|외화|환위험", b):
+        if HEDGE_ACCT_RE.search(b) and re.search(r"통화|환율|외화|환위험", b) and not HEDGE_NEG_RE.search(b):
             return Metric("fx_hedge_acct", "ALL", 1.0, None, None, None, _evidence(t) or b[:300], t.index, t.file)
     return None
 

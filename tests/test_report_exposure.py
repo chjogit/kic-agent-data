@@ -204,3 +204,11 @@ def test_hedge_accounting_flag_and_text_without_numbers_parsed():
     res = ep.extract({"a.xml": x})
     assert "fx_hedge_acct" in res["found"] and "통화스왑" in res["hedge_text"]
     assert not [m for m in res["metrics"] if m.metric not in ("fx_hedge_acct", "fx_derivative")]   # 계약 규모는 숫자로 저장 안 함
+
+
+def test_hedge_accounting_negation_is_not_flagged():
+    x = _t([["구 분", "자산", "부채"], ["통화선도", "1,000", "2,000"]],
+           before="당사는 환율변동위험을 줄이기 위해 통화선도를 이용하나 위험회피회계를 적용하지 않습니다.",
+           unit_table="(단위: 백만원)")
+    res = ep.extract({"a.xml": x})
+    assert "fx_derivative" in res["found"] and "fx_hedge_acct" not in res["found"]
