@@ -22,9 +22,9 @@ API_OF_JOB = {
     "lending": "data.go.kr", "backfill-customs": "data.go.kr", "customs": "data.go.kr",
     "backfill-us-prices": "yfinance", "us-prices": "yfinance", "backfill-indices": "yfinance", "indices": "yfinance", "us-etf-prices": "yfinance",
     "backfill-macro": "ecos·fred", "macro": "ecos·fred",
-    "backfill-news": "naver", "news": "naver", "backfill-community": "naver", "backfill-blog-deep": "naver", "community": "naver", "mentions": "naver",
+    "backfill-news": "naver", "backfill-news-gaps": "naver", "backfill-community-gaps": "naver", "news": "naver", "backfill-community": "naver", "backfill-blog-deep": "naver", "community": "naver", "mentions": "naver",
     "backfill-trends": "naver_datalab", "trends": "naver_datalab",
-    "finnhub-news": "finnhub", "youtube": "youtube",
+    "finnhub-news": "finnhub", "youtube": "youtube", "youtube-rest": "youtube",
     "sync-kospi200": "naver_finance", "backfill-investor-flows": "naver_finance", "investor-flows": "naver_finance",
 }
 API_NAMES = sorted(set(API_OF_JOB.values()))

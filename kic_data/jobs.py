@@ -114,6 +114,12 @@ JOBS: list[Job] = [
         needs=DB + NAVER, split=("KR", "US"), chunk=10, group="과거분(1회)"),
     # ↑ backfill-community(2페이지)는 글이 많은 대형주에서 며칠치뿐이라 감성 변화의 직전 기간(8~30일 전)이 비었음.
     #   블로그만 작성일이 있어 깊게 받음 (카페는 날짜가 없어 과거분이 의미 없음). 30일보다 오래된 페이지에 닿으면 멈춤
+    Job("backfill-news-gaps", "뉴스 30일(뉴스가 없는 종목만)", "cmd_news",
+        {"days": 30, "max_items": 300, "only_missing": True}, every=ONCE, needs=DB + NAVER, group="과거분(1회)"),
+    Job("backfill-community-gaps", "블로그·카페 30일(글이 없는 종목만)", "cmd_community",
+        {"days": 30, "sources": "naver_blog,naver_cafe", "pages": 10, "only_missing": True}, every=ONCE,
+        needs=DB + NAVER, group="과거분(1회)"),
+    # ↑ 검색어 별칭·종목명 단독 검색·광고어 필터를 고친 뒤(10-29) 0건이던 종목(SKIET·코스모화학·DB손해보험 등)만 다시 받기
     Job("backfill-trends", "검색 관심도 1년", "cmd_trends", {"days": 365}, every=ONCE, needs=DB,
         needs_any=NEWS_KEYS, group="과거분(1회)"),
     Job("backfill-customs", "관세청 반도체 수출입 5년", "cmd_customs", {"from_ym": _ym_ago(60), "hs": HS_SEMI}, every=ONCE,
@@ -149,6 +155,10 @@ JOBS: list[Job] = [
                                                                     "order": "viewCount"},
         every=DAY, needs=DB + ("YOUTUBE_API_KEY",)),
     # ↑ 검색 1회 100단위(하루 10,000)라 영상이 많은 국내 시총 상위 40종목 + 해외 종목만 매일 (약 5,700 + 댓글 수백)
+    Job("youtube-rest", "유튜브 나머지 국내 종목(하루 25개씩 순환)", "cmd_youtube",
+        {"days": 14, "videos": 3, "comments": 50, "rotate_rest": (40, 25), "order": "viewCount"},
+        every=DAY, needs=DB + ("YOUTUBE_API_KEY",)),
+    # ↑ 시총 상위 40 밖의 국내 약 170종목을 약 1주에 한 번씩 (검색 25회 × 100단위 ≈ 2,500 + 통계·댓글 ≈ 하루 2,600)
     Job("investor-flows", "투자자별 순매수(외국인·기관·개인)", "cmd_investor_flows", {"days": 10}, every=DAY,
         needs=DB, split=("KR",), chunk=50, after_kst=dtime(18, 30)),
     # ↑ 네이버 비공식 API 라 종목당 하루 1회만. 투자자별 수치는 장 마감 뒤 확정되므로 한국시간 18:30 이후에 돌려
@@ -181,6 +191,7 @@ JOBS: list[Job] = [
 ]
 # 새 종목이 들어오면 다시 해야 하는 과거분 (종목마다 받는 것)
 PER_TICKER_BACKFILLS = ("backfill-kr-prices", "backfill-disclosures", "backfill-news", "backfill-community",
+                        "backfill-news-gaps", "backfill-community-gaps",
                         "backfill-blog-deep",
                         "backfill-trends", "backfill-investor-flows", "backfill-dart-annual", "backfill-dart-quarterly")
 # 종목 마스터가 바뀌면 과거분보다 먼저 다시 돌려야 하는 준비 작업 (DART 고유번호·업종이 있어야 재무·공시·Peer 를 만듦)

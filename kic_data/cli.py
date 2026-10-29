@@ -248,8 +248,11 @@ def cmd_news(args) -> int:
     s = make_session()
     since = date.today() - timedelta(days=args.days)
     with db.connect() as conn:
+        have = db.companies_with_docs(conn, "naver_news") if getattr(args, "only_missing", False) else set()
         for market in ("KR", "US"):
             for cid, ticker, name, *_ in db.list_companies(conn, market):
+                if cid in have:  # only_missing: 뉴스가 하나도 없는 종목만 (검색어·필터를 고친 뒤 과거분 다시 받기)
+                    continue
                 query, must = news.terms_for(market, ticker, name)
                 try:
                     rows = news.collect_company_news(s, query, must, since, args.max_items)
@@ -267,11 +270,15 @@ def cmd_community(args) -> int:
     sources = [x.strip() for x in args.sources.split(",") if x.strip()]
     bad = 0
     with db.connect() as conn:
+        have = ({src: db.companies_with_docs(conn, src) for src in sources}
+                if getattr(args, "only_missing", False) else {})
         for market in ("KR", "US"):
             for cid, ticker, name, *_ in db.list_companies(conn, market):
                 term, must = news.terms_for(market, ticker, name)
                 parts = []
                 for src in sources:
+                    if cid in have.get(src, ()):  # only_missing: 그 출처 글이 하나도 없는 종목만
+                        continue
                     try:
                         rows = community.collect(s, src, term, must, since, pages=args.pages)
                     except RuntimeError as exc:
@@ -280,7 +287,8 @@ def cmd_community(args) -> int:
                         continue
                     n = db.upsert_documents(conn, cid, src, rows, keep_first=(src == "naver_cafe"))
                     parts.append(f"{src.split('_')[1]} {n}")
-                _ok(f"{market}:{ticker}", ", ".join(parts) + f" (검색어 '{term} 주가/주식')")
+                if parts:
+                    _ok(f"{market}:{ticker}", ", ".join(parts) + f" (검색어 '{term} 주가/주식')")
     return 1 if bad else 0
 
 
@@ -994,6 +1002,15 @@ def cmd_finnhub(args) -> int:
     return 1 if bad else 0
 
 
+def rotation_slice(items: list, per_day: int, day: date) -> list:
+    """items 를 per_day 개씩 나눠 날짜마다 다음 묶음 (끝나면 처음부터). 같은 날에는 같은 묶음."""
+    if not items or per_day <= 0:
+        return []
+    n = -(-len(items) // per_day)
+    i = day.toordinal() % n
+    return items[i * per_day:(i + 1) * per_day]
+
+
 def cmd_youtube(args) -> int:
     """유튜브 공개 데이터: 종목별 최근 영상(통계)과 공개 댓글. 키가 없으면 건너뜁니다."""
     if not env("YOUTUBE_API_KEY"):
@@ -1004,11 +1021,17 @@ def cmd_youtube(args) -> int:
     bad = 0
     with db.connect() as conn:
         top_kr = getattr(args, "top_kr", None)
-        caps = db.market_caps(conn) if top_kr else {}
-        for market in ("KR", "US"):
+        rest = getattr(args, "rotate_rest", None)  # (상위 몇 종목 제외, 하루 몇 종목)
+        caps = db.market_caps(conn) if (top_kr or rest) else {}
+        markets = ("KR",) if rest else ("KR", "US")
+        for market in markets:
             companies = db.list_companies(conn, market)
             if market == "KR" and top_kr:  # 할당량 때문에 영상이 많은 시총 상위 종목만
                 companies = sorted(companies, key=lambda c: -caps.get(c[0], 0))[:top_kr]
+            elif market == "KR" and rest:  # 나머지 종목은 하루 per_day 개씩 돌아가며 (약 1주에 한 번씩)
+                skip, per_day = rest
+                others = sorted(companies, key=lambda c: -caps.get(c[0], 0))[skip:]
+                companies = rotation_slice(sorted(others, key=lambda c: c[1]), per_day, date.today())
             for cid, ticker, name, *_ in companies:
                 term, must = news.terms_for(market, ticker, name)
                 query = f"{term} 주가"
@@ -1052,8 +1075,11 @@ def cmd_investor_flows(args) -> int:
 LENDING_EMPTY_ALERT_DAYS = 5  # 며칠 지난 날짜가 이만큼 한꺼번에 0건이면 승인·엔드포인트 문제로 봄
 
 
+LENDING_MARKETS = (("코스피", "fsc_lending"), ("코스닥", "fsc_lending_kosdaq"))
+
+
 def cmd_lending(args) -> int:
-    """코스피 종목별 일별 대차거래 (하루 1회 호출로 코스피 전 종목). 등록된 국내 종목만 저장합니다.
+    """코스피·코스닥 종목별 일별 대차거래 (시장마다 하루 1회 호출로 전 종목). 등록된 국내 종목만 저장합니다.
 
     최근 days 일 중 시세가 있는 거래일(core.price_daily)인데 대차 행이 없는 날만, 최근 날짜부터 max_days 일씩 받습니다.
     한 번 부를 때 약 3초라 1년치를 한 번에 받으면 십여 분 걸리므로 매시간 나눠 채웁니다.
@@ -1066,27 +1092,33 @@ def cmd_lending(args) -> int:
         ids = {t: cid for cid, t, *_ in db.list_companies(conn, "KR")}
         if not ids:
             return 0
-        have = db.lending_dates(conn, since)
-        todo = [d for d in db.trading_dates(conn, "KR", since) if d < today and d not in have]
-    todo = sorted(todo, reverse=True)[:args.max_days] if args.max_days else sorted(todo, reverse=True)
+        trading = [d for d in db.trading_dates(conn, "KR", since) if d < today]
+        # 시장마다 따로: 코스피(fsc_lending), 코스닥(fsc_lending_kosdaq, 비교군 반도체 장비·소재 8종목)
+        todo_by_market = {}
+        for market, source in LENDING_MARKETS:
+            have = db.lending_dates(conn, since, source)
+            todo = sorted((d for d in trading if d not in have), reverse=True)
+            todo_by_market[market] = todo[:args.max_days] if args.max_days else todo
+    todo = sorted({d for t in todo_by_market.values() for d in t})
     if not todo:
         _ok("대차거래", "받을 날짜 없음 (모두 수집됨)")
         return 0
-    by_cid: dict[int, list] = {}
+    by_src: dict[tuple[int, str], list] = {}
     days = bad = 0
-    for d in todo:
-        try:
-            rows = lending.fetch_day(s, d)
-        except RuntimeError as exc:
-            _fail(f"대차 {d}", str(exc))
-            bad += 1
-            continue
-        days += bool(rows)
-        for r in rows:
-            if r["ticker"] in ids:
-                by_cid.setdefault(ids[r["ticker"]], []).append(r)
+    for market, source in LENDING_MARKETS:
+        for d in todo_by_market[market]:
+            try:
+                rows = lending.fetch_day(s, d, market)
+            except RuntimeError as exc:
+                _fail(f"대차 {market} {d}", str(exc))
+                bad += 1
+                continue
+            days += bool(rows)
+            for r in rows:
+                if r["ticker"] in ids:
+                    by_src.setdefault((ids[r["ticker"]], source), []).append(r)
     with db.connect() as conn:
-        n = sum(db.upsert_lending(conn, cid, rows, "fsc_lending") for cid, rows in by_cid.items())
+        n = sum(db.upsert_lending(conn, cid, rows, source) for (cid, source), rows in by_src.items())
     # 활용자가이드: 영업일 자료는 다음 영업일 13시 이후 공개(금요일분은 월요일). 그래서 최근 1~2 영업일은 아직 비어 있을 수 있고, 원천에 자료가 없는 날(빈 날)도 있습니다. 승인·키 문제는 오류 코드로
     # 와서 위에서 실패로 잡히므로, 0건은 며칠 지난 날짜 여러 개가 한꺼번에 비었을 때만 실패로 남깁니다.
     old_empty = [d for d in todo if d <= today - timedelta(days=4)]
@@ -1096,7 +1128,7 @@ def cmd_lending(args) -> int:
     if n == 0:
         _ok("대차거래", f"새 행 없음: 원천에 아직 없거나 빈 날 {', '.join(str(d) for d in sorted(todo))}")
         return 0
-    _ok("대차거래", f"{len(todo)}일 요청 중 {days}거래일 수신 ({min(todo)}~{max(todo)}), {len(by_cid)}/{len(ids)}종목, {n}행")
+    _ok("대차거래", f"{len(todo)}일 요청 중 {days}거래일 수신 ({min(todo)}~{max(todo)}), {len({cid for cid, _ in by_src})}/{len(ids)}종목, {n}행 (코스피·코스닥)")
     return 1 if bad else 0
 
 
@@ -1300,8 +1332,14 @@ def cmd_build_features(args) -> int:
         for spec in PEER_THEMES.values():
             for key in spec["members"]:
                 theme_of[tuple(key)] = [tuple(k) for k in spec["members"]]
+        # 비교군: 수동 테마(반도체·빅테크) 소속이면 테마, 아니면 build-peer-groups 가 만든 KRX 업종 Peer Group
+        sector_peers = db.peer_members_by_base(conn, "krx_sector:")
+        key_of_cid = {v["company_id"]: k for k, v in snaps.items()}
         for key, snap in sorted(snaps.items()):
-            members = [m for m in theme_of.get(key, []) if m != key and m in snaps]
+            if key in theme_of:
+                members = [m for m in theme_of[key] if m != key and m in snaps]
+            else:
+                members = [key_of_cid[c] for c in sector_peers.get(snap["company_id"], []) if c in key_of_cid]
             peers = features.peer_medians([snaps[m] for m in members])
             cid = snap["company_id"]
             attention = {
@@ -1350,6 +1388,9 @@ def cmd_export_features(args) -> int:
 
 
 PEER_MAX = 15  # 업종 Peer Group 최대 인원 (시총 큰 순)
+# KOSPI 200 안에 같은 업종 종목이 하나뿐일 때 대신 쓸 가까운 업종 (F&F·에스디바이오센서·한일시멘트 등)
+NEAR_SECTOR = {"섬유·의류": "유통", "의료·정밀기기": "제약", "비금속": "건설", "종이·목재": "화학",
+               "기타제조": "화학", "부동산": "건설", "농업·임업·어업": "음식료·담배"}
 
 
 def cmd_build_peers(args) -> int:
@@ -1357,10 +1398,16 @@ def cmd_build_peers(args) -> int:
         caps = db.market_caps(conn)
         # KOSPI 200 업종 Peer Group: 같은 KRX 업종 안의 다른 편입 종목 (시총 순)
         n_groups = 0
-        for sector, members in db.index_members_by_sector(conn, "KOSPI200").items():
+        by_sector = db.index_members_by_sector(conn, "KOSPI200")
+        for sector, members in by_sector.items():
             for base_cid, _ in members:
                 others = sorted((cid for cid, _ in members if cid != base_cid), key=lambda cid: -caps.get(cid, 0))
-                rows = [(cid, i + 1, f"KOSPI 200 같은 KRX 업종: {sector}") for i, cid in enumerate(others[:PEER_MAX])]
+                reason = f"KOSPI 200 같은 KRX 업종: {sector}"
+                near = NEAR_SECTOR.get(sector)
+                if not others and near in by_sector:  # 업종에 혼자면 가까운 업종으로 대신 (표에 이유를 남김)
+                    others = sorted((cid for cid, _ in by_sector[near]), key=lambda cid: -caps.get(cid, 0))
+                    reason = f"KOSPI 200 안에 같은 업종({sector})이 없어 가까운 업종 {near} 로 대신"
+                rows = [(cid, i + 1, reason) for i, cid in enumerate(others[:PEER_MAX])]
                 if rows:
                     db.create_peer_group(conn, base_cid, f"krx_sector:{sector}", rows)
                     n_groups += 1

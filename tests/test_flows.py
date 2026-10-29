@@ -99,8 +99,10 @@ class LendingCommandTest(unittest.TestCase):
         trading = [today - timedelta(days=i) for i in range(1, 8)]
         asked = []
 
-        def fetch_day(session, d):
-            asked.append(d)
+        def fetch_day(session, d, market="코스피"):
+            asked.append((market, d))
+            if market != "코스피":
+                return []
             return [{"ticker": "005930", "trade_date": d, "lent_qty": 1, "repaid_qty": 1, "balance_qty": 10, "balance_amt": 100}]
 
         written = []
@@ -108,10 +110,12 @@ class LendingCommandTest(unittest.TestCase):
              mock.patch.object(cli.db, "list_companies", return_value=[(7, "005930", "삼성전자", None, None)]), \
              mock.patch.object(cli.db, "lending_dates", return_value={trading[0]}), \
              mock.patch.object(cli.db, "trading_dates", return_value=sorted(trading)), \
-             mock.patch.object(cli.db, "upsert_lending", side_effect=lambda c, cid, rows, src: written.append((cid, rows)) or len(rows)), \
+             mock.patch.object(cli.db, "upsert_lending", side_effect=lambda c, cid, rows, src: written.append((cid, rows, src)) or len(rows)), \
              mock.patch.object(cli.lending, "fetch_day", side_effect=fetch_day):
             rc = cli.cmd_lending(Namespace(days=30, max_days=3))
         self.assertEqual(rc, 0)
-        self.assertEqual(asked, trading[1:4])  # 이미 있는 날은 건너뛰고 최근부터 3일
+        # 시장마다 이미 있는 날은 건너뛰고 최근부터 3일 (코스피 → 코스닥)
+        self.assertEqual(asked, [("코스피", d) for d in trading[1:4]] + [("코스닥", d) for d in trading[1:4]])
         self.assertEqual(written[0][0], 7)
         self.assertEqual(len(written[0][1]), 3)
+        self.assertEqual(written[0][2], "fsc_lending")

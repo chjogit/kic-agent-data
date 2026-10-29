@@ -37,7 +37,8 @@ NEWS_TERMS: dict[str, tuple[str, tuple[str, ...]]] = {
     "US:TXN": ("텍사스인스트루먼트", ("텍사스인스트루먼트", "Texas Instruments")),
     "US:LRCX": ("램리서치", ("램리서치", "Lam Research")),
     "US:KLAC": ("KLA", ("KLA",)),
-    "US:ADI": ("아날로그디바이스", ("아날로그디바이스", "Analog Devices")),
+    "US:ADI": ("아날로그디바이스", ("아날로그디바이스", "아나로그디바이스", "Analog Devices", "ADI")),
+    "KR:361610": ("SK아이이테크놀로지", ("SK아이이테크놀로지", "SKIET")),
     "US:MRVL": ("마벨", ("마벨", "Marvell")),
     "US:ON": ("온세미", ("온세미", "onsemi", "ON Semiconductor")),
     "US:NXPI": ("NXP", ("NXP",)),
@@ -115,6 +116,7 @@ def fetch_news(session, query: str, display: int = 100, start: int = 1, sort: st
 
 # 검색어에 붙이는 주제어(AND 검색). 주제마다 최신순·관련도순으로 모아 날짜와 내용이 고르게 퍼지게 합니다.
 TOPICS = ("실적", "목표주가", "전망", "투자")
+FALLBACK_MIN = 10  # 주제어 검색으로 모은 기사가 이보다 적으면 종목명만으로 한 번 더 검색
 
 
 def _title_key(title: str) -> str:
@@ -155,5 +157,18 @@ def collect_company_news(
                         continue
                     seen_titles.add(key)
                     by_url[row["url"]] = row
+    if topics and len(by_url) < FALLBACK_MIN:
+        # 중소형주는 '종목명 + 실적/전망' 기사가 드물어 0건이 되기 쉬움 → 종목명만으로 한 번 더 (최신순·관련도순)
+        for sort in ("date", "sim"):
+            for row in fetch_news(session, query, display=100, start=1, sort=sort):
+                if row["published_at"] and row["published_at"] < since:
+                    continue
+                if not matches(row, must) or is_market_wrap(row["title"]) or row["url"] in by_url:
+                    continue
+                key = _title_key(row["title"])
+                if key in seen_titles:
+                    continue
+                seen_titles.add(key)
+                by_url[row["url"]] = row
     rows = sorted(by_url.values(), key=lambda r: r["published_at"] or date.min, reverse=True)
     return rows[:max_items]

@@ -46,7 +46,7 @@ def fetch_today(session, market: str, ticker: str, name: str | None, today: date
     blog_rows = []
     for r in blog_items:
         text = f"{r['title']} {r['summary']}"
-        if r["published_at"] == today and any(m.lower() in text.lower() for m in must) and not community.is_spam(text):
+        if r["published_at"] == today and any(m.lower() in text.lower() for m in must) and not community.is_spam(text, must):
             blog_rows.append(r)
     return {"naver_news": news_rows, "naver_blog": blog_rows}, totals
 
