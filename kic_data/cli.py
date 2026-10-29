@@ -33,6 +33,7 @@
   collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-investor-flows  국내 종목 투자자별(외국인·기관·개인) 일별 순매수 (네이버 증권 공개 API)
   collect-lending  코스피 종목별 일별 주식 대차거래·잔고 (금융위원회 주식대차거래정보, 공매도 대용)
+  collect-bond-issue  회사채 발행 종목: 표면이율·고정/변동·만기 (금융위원회 채권발행정보)
   collect-kr-prices / collect-us-prices / collect-dart / collect-sec / collect-macro
   tick             시간표(kic_data/jobs.py)상 차례가 된 작업을 실행 (GitHub Actions 매시간 실행용)
 
@@ -42,11 +43,12 @@ GitHub Actions 로 돌리는 방법은 docs/AUTO_RUN.md, 웹 대시보드(Vercel
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import date, timedelta
 
 from . import db, features, krx_sector, pulse, quarterly, rag, sentiment, status
-from .collectors import (community, customs, dart, etf, finnhub, fsc, indices, investor_flow, kospi200, lending, macro,
+from .collectors import (community, customs, dart, etf, finnhub, fsc, fsc_bond, indices, investor_flow, kospi200, lending, macro,
                          news, sec, trends, us_prices, youtube)
 from .config import env
 from .http_util import make_session
@@ -849,6 +851,82 @@ def cmd_debt_terms(args) -> int:
     return 1 if bad else 0
 
 
+def _ensure_crnos(conn, s, companies) -> dict[int, str]:
+    """법인등록번호가 없는 회사는 DART 기업개황으로 채웁니다 (회사당 1회, 이후 company-info 가 유지)."""
+    have = db.company_crnos(conn)
+    conn.commit()
+    for cid, ticker, _, corp_code, _ in companies:
+        if cid in have or not corp_code:
+            continue
+        try:
+            crno = dart.fetch_company(s, corp_code).get("jurir_no")
+        except RuntimeError as exc:
+            _fail(f"KR:{ticker}", f"기업개황(법인등록번호): {exc}")
+            continue
+        if crno:
+            db.set_crno(conn, cid, crno)
+            have[cid] = crno
+    return have
+
+
+def cmd_bond_issue(args) -> int:
+    """회사채 발행 종목(발행금액·표면이율·고정/변동·만기)을 금융위원회_채권발행정보에서 받습니다 (법인등록번호로 조회)."""
+    s = make_session()
+    bad = 0
+    with db.connect() as conn:
+        companies = db.list_companies(conn, "KR")
+        crnos = _ensure_crnos(conn, s, companies)
+        for cid, ticker, _, _, _ in companies:
+            if cid not in crnos:
+                continue
+            try:
+                rows = fsc_bond.fetch_issuer(s, crnos[cid], getattr(args, "bas_dt", None))
+            except RuntimeError as exc:
+                _fail(f"KR:{ticker}", f"채권발행정보: {exc}")
+                bad += 1
+                if re.search(r"SERVICE_KEY|오류 (30|22|20)\b|NO_OPENAPI", str(exc)):   # 미승인 키·한도 초과면 나머지도 같으므로 멈춤
+                    if re.search(r"SERVICE_KEY|오류 (30|20)\b", str(exc)):
+                        print("[WARN] 채권발행정보 키가 아직 이 서비스에 승인·등록되지 않음 (승인 2026-10-29, 다음날부터 사용) → 이번 실행은 건너뜀")
+                        bad -= 1
+                    break
+                continue
+            db.save_bond_issues(conn, cid, rows)
+            if rows:
+                fl = sum(1 for r in rows if r["rate_kind"] == "floating")
+                _ok(f"KR:{ticker}", f"발행 종목 {len(rows)}개 (변동금리 {fl}개)")
+    return 1 if bad else 0
+
+
+def cmd_probe_bond_issue(args) -> int:
+    """채권발행정보 원 응답을 몇 종목만 출력합니다 (DB 에 쓰지 않음, 필드 이름·단위 확인용)."""
+    import json
+
+    s = make_session()
+    want = {t.strip() for t in args.tickers.split(",") if t.strip()}
+    with db.connect() as conn:
+        companies = [c for c in db.list_companies(conn, "KR") if c[1] in want]
+        crnos = _ensure_crnos(conn, s, companies)
+    for cid, ticker, name, _, _ in companies:
+        crno = crnos.get(cid)
+        print(f"\n##### {ticker} {name} 법인등록번호 {'있음' if crno else '없음'}")
+        if not crno:
+            continue
+        try:
+            payload = fsc_bond.fetch_raw(s, crno, args.bas_dt, rows=args.rows)
+        except RuntimeError as exc:
+            print("오류:", exc)
+            continue
+        print(json.dumps(payload, ensure_ascii=False, indent=1)[:args.max_chars])
+        try:
+            rows, total = fsc_bond.parse_items(payload)
+            print(f"→ 해석 {len(rows)}행 / 전체 {total}")
+            for r in rows[:args.rows]:
+                print("   ", {k: (str(v) if v is not None else None) for k, v in r.items() if k != "raw"})
+        except RuntimeError as exc:
+            print("해석 오류:", exc)
+    return 0
+
+
 def cmd_probe_dart_debt(args) -> int:
     """차입 조건·매출채권 API 응답을 몇 종목만 받아 출력합니다 (DB 에 쓰지 않음, 단위·행 이름 확인용)."""
     s = make_session()
@@ -1180,6 +1258,7 @@ def cmd_company_info(args) -> int:
                 continue
             info = dart.fetch_company(s, corp_code)
             db.update_company_info(conn, cid, sector=info["induty_code"], legal_name=info["corp_name"])
+            db.set_crno(conn, cid, info.get("jurir_no"))
             sector = krx_sector.ksic_to_krx(info["induty_code"], ticker)
             db.set_krx_sector(conn, cid, sector)
             _ok(f"KR {ticker}", f"KSIC {info['induty_code']} → KRX 업종 {sector or '-'}, 정식 회사명 {info['corp_name'] or '-'}")
@@ -1540,6 +1619,15 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-lending"); a.add_argument("--days", type=int, default=10)
     a.add_argument("--max-days", type=int, default=None, help="한 번에 받을 최대 거래일 수 (최근 날짜부터)")
     a.set_defaults(fn=cmd_lending)
+    a = sub.add_parser("collect-bond-issue", help="회사채 발행 종목: 표면이율·고정/변동·만기 (금융위원회_채권발행정보)")
+    a.add_argument("--bas-dt", default=None, help="기준일자 YYYYMMDD (기본: 원천 기본값)")
+    a.set_defaults(fn=cmd_bond_issue)
+    a = sub.add_parser("probe-bond-issue", help="채권발행정보 원 응답 확인 (DB 에 쓰지 않음)")
+    a.add_argument("--tickers", default="005930,005380,007070,034020,015760")
+    a.add_argument("--bas-dt", default=None)
+    a.add_argument("--rows", type=int, default=3)
+    a.add_argument("--max-chars", type=int, default=4000)
+    a.set_defaults(fn=cmd_probe_bond_issue)
     args = p.parse_args(argv)
     try:
         return args.fn(args)

@@ -155,6 +155,9 @@ JOBS: list[Job] = [
     #   그날 수급까지 받음 (이전에는 마지막 완료 + 24시간이라 오전에 돌면 전 거래일까지만 들어와 가격보다 하루 늦었음)
     Job("lending", "대차거래(코스피 전 종목, 공매도 대용)", "cmd_lending", {"days": 365, "max_days": 40},
         needs=DB, needs_any=DATA_GO),  # 빠진 거래일만 최근부터 40일씩 (1년치는 몇 시간에 걸쳐 채움, 이후엔 하루 1~2회 호출)
+    Job("bond-issue", "회사채 발행 종목(표면이율·고정/변동·만기, 금융위원회)", "cmd_bond_issue", {"bas_dt": None},
+        every=DAY, needs=DB + ("DART_API_KEY",), needs_any=DATA_GO, group="재무", after_kst=dtime(13, 30)),
+    # ↑ 회사당 1회(약 210회/일, 키 10,000회/일). 원천은 기준일 다음 영업일 13시 이후 갱신
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
