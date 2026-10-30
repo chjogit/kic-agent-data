@@ -4,6 +4,7 @@
   check-db         DB 연결·pgvector 확인
   apply-schema     sql/*.sql 적용
   check-sources    각 API 키가 동작하는지 1회씩 호출해 확인
+  purge-opinion-docs  블로그·카페 문서 보관 기한 정리 (--dry-run 으로 건수 확인)
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
   seed-companies   universe.py 의 종목을 core.company 에 등록
   sync-dart-codes  DART 고유번호를 KR 종목에 연결
@@ -770,6 +771,21 @@ def cmd_probe_dart_doc(args) -> int:
                     print(f"\n--- [{','.join(hits)}] {name} 표#{tb.index} 단위={tb.unit} 제목={tb.title!r}")
                     print("문맥:", tb.context[-220:])
                     print(tb.text(args.max_rows)[:args.max_chars])
+    return 0
+
+
+def cmd_purge_opinion(args) -> int:
+    """블로그·카페 문서 보관 기한 정리: 기한을 넘긴 행을 일별 집계로 남기고 지움 (--dry-run 은 건수·회수 예상만)."""
+    from . import retention
+
+    with db.connect() as conn:
+        r = retention.purge(conn, pulse.kst_now().date(), args.days, args.dry_run)
+    mb = 1024 * 1024
+    _ok("대상", f"발행일 {r['cutoff']} 이전(보관 {r['days']}일 초과) 블로그·카페 {r['targets']}건, 재사용 가능 공간 약 {r['est_bytes'] / mb:.1f}MB")
+    if args.dry_run:
+        _ok("dry-run", "쓰기 없음")
+    else:
+        _ok("삭제", f"{r['deleted']}건 (집계 {r['agg_rows']}행 갱신)")
     return 0
 
 
@@ -1687,6 +1703,9 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
+    a = sub.add_parser("purge-opinion-docs", help="블로그·카페 문서 보관 기한 정리 (일별 집계를 남기고 삭제)")
+    a.add_argument("--days", type=int, default=None, help="보관 일수 (기본 30, 환경변수 RETENTION_DAYS)")
+    a.add_argument("--dry-run", action="store_true", help="지울 건수·회수 예상만 출력"); a.set_defaults(fn=cmd_purge_opinion)
     a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율·이자율 민감도·외화 자산부채·수출 비중·외환 파생·가격변동 발췌")
     a.add_argument("--force", action="store_true", help="이미 읽은 원문도 다시")
     a.set_defaults(fn=cmd_report_exposure)

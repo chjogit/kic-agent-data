@@ -178,6 +178,7 @@ JOBS: list[Job] = [
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
+    Job("purge-opinion", "블로그·카페 보관 기한 정리(일별 집계 후 삭제)", "cmd_purge_opinion", {"days": None, "dry_run": False}, every=DAY, needs=DB),
     Job("mentions", "언급량 스냅샷", "cmd_pulse", {"tickers": None, "max_age": 0, "market_hours": False},
         every=SIX_HOURS, needs=DB + NAVER, split=("KR", "US"), chunk=25),
     # 재무: 국내는 다중회사 주요계정(100개사씩)이라 몇 번의 호출로 끝남

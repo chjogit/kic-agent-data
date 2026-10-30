@@ -129,6 +129,44 @@ def annual_reports(conn, company_id: int, limit: int = 3) -> list[tuple]:
         return cur.fetchall()
 
 
+_RETENTION_DAY = "coalesce(d.published_at, d.created_at::date)"
+
+
+def retention_count(conn, sources: list[str], cutoff) -> int:
+    """보관 기한이 지난 문서 수 (cutoff 보다 이전에 발행된 것)."""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM rag.document d WHERE d.source = ANY(%s) AND {_RETENTION_DAY} < %s", [sources, cutoff])
+        return int(cur.fetchone()[0])
+
+
+def retention_batch(conn, sources: list[str], cutoff, limit: int) -> list[tuple]:
+    """지울 문서 한 배치 → [(doc_id, company_id, source, day, score)]. 종목이 없는 문서(company_id NULL)는 집계할 수 없어 건너뜀."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT d.doc_id, d.company_id, d.source, {_RETENTION_DAY}, s.score FROM rag.document d "
+            "LEFT JOIN core.doc_sentiment s USING (doc_id) "
+            f"WHERE d.source = ANY(%s) AND {_RETENTION_DAY} < %s AND d.company_id IS NOT NULL "
+            "ORDER BY d.doc_id LIMIT %s", [sources, cutoff, limit])
+        return cur.fetchall()
+
+
+def retention_apply(conn, agg: dict, doc_ids: list[int]) -> None:
+    """일별 집계에 더하고 같은 트랜잭션에서 문서를 지움 (core.doc_sentiment 는 ON DELETE CASCADE)."""
+    try:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO core.doc_daily_agg (company_id, source, d, n_docs, n_scored, score_sum) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (company_id, source, d) DO UPDATE SET "
+                "n_docs = core.doc_daily_agg.n_docs + EXCLUDED.n_docs, n_scored = core.doc_daily_agg.n_scored + EXCLUDED.n_scored, "
+                "score_sum = core.doc_daily_agg.score_sum + EXCLUDED.score_sum, updated_at = now()",
+                [(c, s, d, n, ns, sm) for (c, s, d), (n, ns, sm) in agg.items()])
+            cur.execute("DELETE FROM rag.document WHERE doc_id = ANY(%s)", [doc_ids])
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def report_parsed(conn, company_id: int, fiscal_year: int, version: str | None = None) -> str | None:
     """이미 읽은 접수번호. version 을 주면 그 파서 버전 표시('parser:v2')가 found 에 있을 때만 읽은 것으로 봄."""
     with conn.cursor() as cur:
