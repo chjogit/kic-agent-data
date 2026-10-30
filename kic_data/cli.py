@@ -87,6 +87,11 @@ def cmd_apply_schema(args) -> int:
     with db.connect() as conn:
         for name in db.apply_schema(conn, lock_timeout=SCHEMA_LOCK_TIMEOUT, busy=busy):
             _ok("적용", name)
+    oc = db.connect_opinion()   # kic-opinion 이 설정돼 있으면 그쪽 스키마도 맞춤
+    if oc is not None:
+        with oc:
+            for name in db.apply_opinion_schema(oc):
+                _ok("적용", name)
     for name in busy:
         _fail(name, f"다른 연결이 테이블을 쓰고 있어 잠금을 {SCHEMA_LOCK_TIMEOUT} 안에 못 잡음 → 건너뜀 (다음 실행에서 다시)")
     return 1 if busy else 0
@@ -304,8 +309,8 @@ def cmd_community(args) -> int:
     since = date.today() - timedelta(days=args.days)
     sources = [x.strip() for x in args.sources.split(",") if x.strip()]
     bad = 0
-    with db.connect() as conn:
-        have = ({src: db.companies_with_docs(conn, src) for src in sources}
+    with db.connect() as conn, db.opinion(conn) as oconn:   # 블로그·카페는 kic-opinion(설정 시), 없으면 메인
+        have = ({src: db.companies_with_docs(oconn, src) for src in sources}
                 if getattr(args, "only_missing", False) else {})
         for market in ("KR", "US"):
             for cid, ticker, name, *_ in db.list_companies(conn, market):
@@ -320,7 +325,7 @@ def cmd_community(args) -> int:
                         _fail(f"{market}:{ticker} {src}", str(exc))
                         bad += 1
                         continue
-                    n = db.upsert_documents(conn, cid, src, rows, keep_first=(src == "naver_cafe"))
+                    n = db.upsert_documents(oconn, cid, src, rows, keep_first=(src == "naver_cafe"))
                     parts.append(f"{src.split('_')[1]} {n}")
                 if parts:
                     _ok(f"{market}:{ticker}", ", ".join(parts) + f" (검색어 '{term} 주가/주식')")
@@ -328,23 +333,28 @@ def cmd_community(args) -> int:
 
 
 def cmd_sentiment(args) -> int:
-    """점수 없는 뉴스·블로그·카페글에 감성 점수를 매깁니다 (제목+요약)."""
+    """점수 없는 뉴스·블로그·카페글에 감성 점수를 매깁니다 (제목+요약). 블로그·카페는 kic-opinion(설정 시)에서 처리."""
     method = args.method or env("SENTIMENT_METHOD") or "lexicon"
-    with db.connect() as conn:
-        if getattr(args, "rescore", False):  # 사전을 고친 뒤 전체 다시 채점
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM core.doc_sentiment WHERE method = %s", [method])
-            conn.commit()
-        docs = db.docs_without_sentiment(conn, method, args.limit)
-        if not docs:
+    with db.connect() as conn, db.opinion(conn) as oconn:
+        main_src, op_src = db.split_sources(oconn, conn, db.SENTIMENT_SOURCES)
+        total = 0
+        for c, srcs in ((conn, main_src), (oconn, op_src)):
+            if not srcs:
+                continue
+            if getattr(args, "rescore", False):  # 사전을 고친 뒤 전체 다시 채점
+                with c.cursor() as cur:
+                    cur.execute("DELETE FROM core.doc_sentiment s USING rag.document d "
+                                "WHERE d.doc_id = s.doc_id AND s.method = %s AND d.source = ANY(%s)", [method, srcs])
+                c.commit()
+            docs = db.docs_without_sentiment(c, method, args.limit, srcs)
+            for i in range(0, len(docs), 500):
+                part = docs[i:i + 500]
+                scores = sentiment.score_texts([f"{t or ''} {sm or ''}" for _, t, sm in part], method)
+                total += db.upsert_sentiment(c, [(doc_id, sc, sentiment.label_of(sc), method)
+                                                 for (doc_id, _, _), sc in zip(part, scores)])
+        if not total:
             _ok("감성 점수", "새로 매길 문서 없음")
             return 0
-        total = 0
-        for i in range(0, len(docs), 500):
-            part = docs[i:i + 500]
-            scores = sentiment.score_texts([f"{t or ''} {sm or ''}" for _, t, sm in part], method)
-            total += db.upsert_sentiment(conn, [(doc_id, sc, sentiment.label_of(sc), method)
-                                                for (doc_id, _, _), sc in zip(part, scores)])
         _ok("감성 점수", f"{total}건 ({method})")
     return 0
 
@@ -359,13 +369,13 @@ def cmd_pulse(args) -> int:
     method = env("SENTIMENT_METHOD") or "lexicon"
     s = make_session()
     bad = 0
-    with db.connect() as conn:
+    with db.connect() as conn, db.opinion(conn) as oconn:
         for market in ("KR", "US"):
             for cid, ticker, name, *_ in db.list_companies(conn, market):
                 if wanted and ticker.upper() not in wanted:
                     continue
                 try:
-                    snap = pulse.refresh(conn, s, cid, market, ticker, name, method, args.max_age)
+                    snap = pulse.refresh(conn, s, cid, market, ticker, name, method, args.max_age, oconn)
                 except RuntimeError as exc:
                     _fail(f"{market}:{ticker}", str(exc))
                     bad += 1
@@ -778,8 +788,8 @@ def cmd_purge_opinion(args) -> int:
     """블로그·카페 문서 보관 기한 정리: 기한을 넘긴 행을 일별 집계로 남기고 지움 (--dry-run 은 건수·회수 예상만)."""
     from . import retention
 
-    with db.connect() as conn:
-        r = retention.purge(conn, pulse.kst_now().date(), args.days, args.dry_run)
+    with db.connect() as conn, db.opinion(conn) as oconn:
+        r = retention.purge(oconn, pulse.kst_now().date(), args.days, args.dry_run)
     mb = 1024 * 1024
     _ok("대상", f"발행일 {r['cutoff']} 이전(보관 {r['days']}일 초과) 블로그·카페 {r['targets']}건, 재사용 가능 공간 약 {r['est_bytes'] / mb:.1f}MB")
     if args.dry_run:
@@ -1498,7 +1508,7 @@ def cmd_show_ttm(args) -> int:
 
 def cmd_build_features(args) -> int:
     today = date.today()
-    with db.connect() as conn:
+    with db.connect() as conn, db.opinion(conn) as oconn:
         macro = db.fetch_macro_all(conn)
         # 해외 20-F 기업(ASML·TSMC)은 재무 통화(EUR·TWD)를 USD 로 환산해 연간 PER/PBR 채움 (collect-macro 의 FRED 환율 필요)
         snaps = {k: features.fill_fx_valuation(v, macro) for k, v in db.fetch_snapshots(conn).items()}
@@ -1518,7 +1528,7 @@ def cmd_build_features(args) -> int:
             cid = snap["company_id"]
             attention = {
                 "search": trends.relative(db.fetch_search_trend(conn, f"{key[0]}:{key[1]}")),
-                "reactions": db.fetch_reactions(conn, cid, today - timedelta(days=40)),
+                "reactions": db.fetch_reactions_split(conn, oconn, cid, today - timedelta(days=40)),
                 "mentions": db.fetch_mention_daily(conn, cid),
                 "today": today,
             }

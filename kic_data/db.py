@@ -4,6 +4,7 @@ psycopg 는 함수 안에서 불러오므로, 파서·테스트는 psycopg 없�
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -21,6 +22,74 @@ def connect():
     # keepalive: 수집 API 를 오래 기다리는 동안 쉬는 연결이 중간에서 끊기지 않게
     return psycopg.connect(env("DATABASE_URL", required=True), connect_timeout=30,
                            keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
+
+
+OPINION_URL_ENV = "OPINION_DATABASE_URL"   # 블로그·카페 전용 프로젝트(kic-opinion). 없으면 메인 DB 하나로 동작
+OPINION_SOURCES = ("naver_blog", "naver_cafe")
+
+
+def connect_opinion():
+    """kic-opinion 연결. 접속 정보(환경변수)가 없으면 None → 호출 쪽이 메인 연결로 대체합니다."""
+    url = env(OPINION_URL_ENV)
+    if not url:
+        return None
+    import psycopg
+
+    return psycopg.connect(url, connect_timeout=30, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
+
+
+@contextmanager
+def opinion(main_conn):
+    """블로그·카페를 읽고 쓸 연결. kic-opinion 이 설정돼 있으면 그 연결(종목 기준을 먼저 맞춤), 아니면 main_conn 그대로."""
+    conn = connect_opinion()
+    if conn is None:
+        yield main_conn
+        return
+    try:
+        sync_opinion_companies(main_conn, conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+def split_sources(oconn, main_conn, sources) -> tuple[list[str], list[str]]:
+    """(메인에서 처리할 출처, kic-opinion 에서 처리할 출처). 분리되지 않았으면 전부 메인."""
+    if oconn is main_conn:
+        return list(sources), []
+    return [s for s in sources if s not in OPINION_SOURCES], [s for s in sources if s in OPINION_SOURCES]
+
+
+def sync_opinion_companies(main_conn, oconn) -> int:
+    """core.company 의 (company_id, market, ticker) 를 kic-opinion 에 맞춥니다. 메인에 새로 생긴 종목은 넣고,
+    같은 company_id 인데 market·ticker 가 다르면 RuntimeError (두 프로젝트의 종목 기준이 어긋난 것). 넣은 건수를 돌려줍니다."""
+    with main_conn.cursor() as cur:
+        cur.execute("SELECT company_id, market, ticker, name FROM core.company")
+        main = {r[0]: r for r in cur.fetchall()}
+    with oconn.cursor() as cur:
+        cur.execute("SELECT company_id, market, ticker FROM core.company")
+        have = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+    bad = [f"{cid}: 메인 {main[cid][1]}:{main[cid][2]} ≠ kic-opinion {k[0]}:{k[1]}"
+           for cid, k in have.items() if cid in main and (main[cid][1], main[cid][2]) != k]
+    if bad:
+        raise RuntimeError("종목 기준 불일치 (company_id) — " + "; ".join(bad[:5]))
+    new = [main[c] for c in main if c not in have]
+    if new:
+        with oconn.cursor() as cur:
+            cur.executemany("INSERT INTO core.company (company_id, market, ticker, name) VALUES (%s,%s,%s,%s) "
+                            "ON CONFLICT (company_id) DO NOTHING", new)
+        oconn.commit()
+    return len(new)
+
+
+def apply_opinion_schema(conn) -> list[str]:
+    """sql/opinion/*.sql 을 kic-opinion 에 적용 (IF NOT EXISTS 라 여러 번 안전)."""
+    applied = []
+    for path in sorted((SQL_DIR / "opinion").glob("*.sql")):
+        with conn.cursor() as cur:
+            cur.execute(path.read_text(encoding="utf-8"))
+        conn.commit()
+        applied.append(f"opinion/{path.name}")
+    return applied
 
 
 def apply_schema(conn, lock_timeout: str | None = None, busy: list[str] | None = None) -> list[str]:
@@ -420,15 +489,15 @@ def fetch_search_trend(conn, subject: str, days: int = 120) -> list[tuple]:
 SENTIMENT_SOURCES = ("naver_news", "naver_blog", "naver_cafe", "youtube_comment")
 
 
-def docs_without_sentiment(conn, method: str, limit: int | None = None) -> list[tuple]:
-    """[(doc_id, title, summary)] 아직 해당 방식으로 점수가 없는 뉴스·블로그·카페글."""
+def docs_without_sentiment(conn, method: str, limit: int | None = None, sources=None) -> list[tuple]:
+    """[(doc_id, title, summary)] 아직 해당 방식으로 점수가 없는 뉴스·블로그·카페글 (sources 로 출처를 좁힐 수 있음)."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT d.doc_id, d.title, d.summary FROM rag.document d "
             "LEFT JOIN core.doc_sentiment s ON s.doc_id = d.doc_id AND s.method = %s "
             "WHERE d.source = ANY(%s) AND s.doc_id IS NULL ORDER BY d.doc_id "
             + ("LIMIT %s" if limit else ""),
-            [method, list(SENTIMENT_SOURCES)] + ([limit] if limit else []))
+            [method, list(sources or SENTIMENT_SOURCES)] + ([limit] if limit else []))
         return cur.fetchall()
 
 
@@ -542,16 +611,23 @@ def latest_price_and_flow_dates(conn, market: str) -> dict[int, tuple]:
         return {r[0]: (r[1], r[2]) for r in cur.fetchall()}
 
 
-def fetch_reactions(conn, company_id: int, since) -> list[dict]:
-    """[{source, published_at, score}] 뉴스·블로그·카페글 (점수 없으면 score=None)."""
+def fetch_reactions(conn, company_id: int, since, sources=None) -> list[dict]:
+    """[{source, published_at, score}] 뉴스·블로그·카페글 (점수 없으면 score=None). sources 로 출처를 좁힐 수 있음."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT d.source, d.published_at, s.score FROM rag.document d "
             "LEFT JOIN core.doc_sentiment s USING (doc_id) "
             "WHERE d.company_id = %s AND d.source = ANY(%s) AND d.published_at >= %s",
-            [company_id, list(SENTIMENT_SOURCES), since])
+            [company_id, list(sources or SENTIMENT_SOURCES), since])
         return [{"source": r[0], "published_at": r[1], "score": None if r[2] is None else float(r[2])}
                 for r in cur.fetchall()]
+
+
+def fetch_reactions_split(conn, oconn, company_id: int, since) -> list[dict]:
+    """fetch_reactions 를 메인(뉴스·유튜브)과 kic-opinion(블로그·카페)에서 나눠 읽어 합칩니다. 분리 안 됐으면 한 번에."""
+    main_src, op_src = split_sources(oconn, conn, SENTIMENT_SOURCES)
+    out = fetch_reactions(conn, company_id, since, main_src)
+    return out + fetch_reactions(oconn, company_id, since, op_src) if op_src else out
 
 
 def insert_new_documents(conn, company_id: int, source: str, rows: list[dict]) -> int:

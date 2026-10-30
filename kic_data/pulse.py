@@ -76,8 +76,9 @@ def summarize(reactions: list[dict], today: date) -> dict:
 
 
 def refresh(conn, session, company_id: int, market: str, ticker: str, name: str | None,
-            method: str = "lexicon", max_age_min: int = 0) -> dict:
-    """한 종목 갱신 → 스냅샷 dict (cached=True 면 API 를 부르지 않은 값)."""
+            method: str = "lexicon", max_age_min: int = 0, oconn=None) -> dict:
+    """한 종목 갱신 → 스냅샷 dict (cached=True 면 API 를 부르지 않은 값). oconn: 블로그·카페를 둔 kic-opinion 연결 (없으면 conn)."""
+    oconn = oconn or conn
     now = kst_now()
     if max_age_min > 0:
         last = db.last_pulse(conn, company_id)
@@ -87,14 +88,16 @@ def refresh(conn, session, company_id: int, market: str, ticker: str, name: str 
     new_docs = 0
     docs_by_src, totals = fetch_today(session, market, ticker, name, today)
     for src, rows in docs_by_src.items():
-        new_docs += db.insert_new_documents(conn, company_id, src, rows)
+        new_docs += db.insert_new_documents(oconn if src in db.OPINION_SOURCES else conn, company_id, src, rows)
     since_last = new_since(db.last_mention_totals(conn, company_id, today), totals)
     db.insert_mention_counts(conn, company_id, now, today, totals)
-    docs = db.docs_without_sentiment(conn, method)
-    if docs:
-        scores = sentiment.score_texts([f"{t or ''} {s or ''}" for _, t, s in docs], method)
-        db.upsert_sentiment(conn, [(d, sc, sentiment.label_of(sc), method) for (d, _, _), sc in zip(docs, scores)])
-    snap = summarize(db.fetch_reactions(conn, company_id, today - timedelta(days=30)), today)
+    main_src, op_src = db.split_sources(oconn, conn, db.SENTIMENT_SOURCES)
+    for c, srcs in ((conn, main_src), (oconn, op_src)):
+        docs = db.docs_without_sentiment(c, method, None, srcs) if srcs else []
+        if docs:
+            scores = sentiment.score_texts([f"{t or ''} {s or ''}" for _, t, s in docs], method)
+            db.upsert_sentiment(c, [(d, sc, sentiment.label_of(sc), method) for (d, _, _), sc in zip(docs, scores)])
+    snap = summarize(db.fetch_reactions_split(conn, oconn, company_id, today - timedelta(days=30)), today)
     snap["mentions_vs_30d"] = features.mention_ratios(db.fetch_mention_daily(conn, company_id),
                                                       ("naver_news", "naver_blog", "naver_cafe"), 1, 6)[0]
     snap.update(new_docs=new_docs, method=method, captured_at=now, new_since_last=since_last)
@@ -106,11 +109,11 @@ def refresh_ticker(market: str, ticker: str, max_age_min: int = 5, method: str =
     """웹 백엔드용 진입점: 종목 하나를 즉시 갱신(또는 5분 캐시)하고 오늘 추이까지 돌려줍니다."""
     from .http_util import make_session
 
-    with db.connect() as conn:
+    with db.connect() as conn, db.opinion(conn) as oconn:
         found = db.find_company(conn, market, ticker)
         if not found:
             raise ValueError(f"등록되지 않은 종목: {market}:{ticker}")
         cid, name = found
-        snap = refresh(conn, make_session(), cid, market, ticker, name, method, max_age_min)
+        snap = refresh(conn, make_session(), cid, market, ticker, name, method, max_age_min, oconn)
         snap["history"] = db.pulse_history(conn, cid, snap["trade_date"])
     return {"market": market, "ticker": ticker, "name": name, **snap}
