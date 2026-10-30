@@ -1,22 +1,31 @@
 name: kic-archive-dart
-# DART A·B 공시 원문을 Object Storage 로 보관 (수동 실행). dry_run 으로 건수·예상 용량부터 확인하세요.
+# DART A·B 공시 원문을 Object Storage(새 프로젝트 old-sky-25271070 / 브랜치 br-polished-frog-b5an5v6t)로 보관 (수동 실행).
+# 기본은 dry-run(건수·예상 용량만 출력). 확인 뒤 dry_run 을 끄고 다시 실행하면 업로드합니다.
+# 메타 ops.dart_archive 는 기존 수집 DB(DATABASE_URL)에 남습니다. 비밀값은 출력하지 않습니다.
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "true 면 건수·예상 용량만 출력"
-        default: "true"
+        description: "켜 두면 건수·예상 용량만 출력 (업로드 없음)"
+        type: boolean
+        default: true
+      limit:
+        description: "올릴 공시 건수 상한 (비우면 전체)"
+        required: false
+        default: ""
 concurrency:
   group: kic-archive-dart
   cancel-in-progress: false
 env:
   DATABASE_URL: ${{ secrets.DATABASE_URL }}
   DART_API_KEY: ${{ secrets.DART_API_KEY }}
-  AWS_ENDPOINT_URL_S3: ${{ secrets.AWS_ENDPOINT_URL_S3 }}
-  NEON_STORAGE_BUCKET: disclosure
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  AWS_REGION: ${{ secrets.AWS_REGION }}
+  # NEON_STORAGE_* 이름의 secret 을 우선 쓰고, 없으면 AWS_* 이름의 secret 을 씁니다.
+  NEON_STORAGE_ENDPOINT: ${{ secrets.NEON_STORAGE_ENDPOINT || secrets.AWS_ENDPOINT_URL_S3 }}
+  NEON_STORAGE_BUCKET: ${{ secrets.NEON_STORAGE_BUCKET || 'disclosure' }}
+  NEON_STORAGE_ACCESS_KEY_ID: ${{ secrets.NEON_STORAGE_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+  NEON_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.NEON_STORAGE_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+  NEON_STORAGE_REGION: ${{ secrets.NEON_STORAGE_REGION || secrets.AWS_REGION }}
+  EXPECTED_STORAGE_BRANCH: br-polished-frog-b5an5v6t
   PYTHONIOENCODING: utf-8
 jobs:
   archive:
@@ -28,6 +37,24 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: 저장소 브랜치 확인 (다르면 중단)
+        run: |
+          if [ -z "$NEON_STORAGE_ENDPOINT" ]; then
+            echo "NEON_STORAGE_ENDPOINT 가 비어 있습니다. 업로드하지 않고 중단합니다."; exit 1
+          fi
+          case "$NEON_STORAGE_ENDPOINT" in
+            *"$EXPECTED_STORAGE_BRANCH"*) echo "엔드포인트 브랜치 일치: $EXPECTED_STORAGE_BRANCH" ;;
+            *) echo "엔드포인트에 $EXPECTED_STORAGE_BRANCH 가 없습니다. 업로드하지 않고 중단합니다."; exit 1 ;;
+          esac
       - run: pip install -r requirements.txt
       - run: python -m kic_data.cli apply-schema
-      - run: python -m kic_data.cli archive-dart ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+      - name: archive-dart
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          args=""
+          if [ "$DRY_RUN" = "true" ]; then args="--dry-run"; fi
+          if [ -n "$LIMIT" ]; then args="$args --limit $LIMIT"; fi
+          echo "실행: archive-dart $args"
+          python -m kic_data.cli archive-dart $args
