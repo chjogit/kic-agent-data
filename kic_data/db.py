@@ -220,14 +220,28 @@ def save_periodic(conn, company_id: int, api: str, fiscal_year: int, reprt_code:
     return len(rows)
 
 
-def docs_without_chunks(conn, source: str, limit: int | None = None) -> list[tuple]:
-    """아직 청크가 없는 문서 → [(doc_id, title, summary)]"""
+def docs_without_chunks(conn, source: str | list[str], limit: int | None = None,
+                        since: str | None = None, until: str | None = None) -> list[tuple]:
+    """아직 청크가 없는 문서 → [(doc_id, title, summary, source, ticker)]
+
+    source 는 하나 또는 목록. since·until('YYYY-MM-DD', 포함)은 published_at 기준. 청크가 하나라도 있는
+    문서는 빼므로 다시 실행해도 같은 문서를 또 임베딩하지 않습니다 (증분).
+    """
+    sources = [source] if isinstance(source, str) else list(source)
     sql = (
-        "SELECT d.doc_id, d.title, d.summary FROM rag.document d "
-        "LEFT JOIN rag.chunk c ON c.doc_id = d.doc_id "
-        "WHERE d.source = %s AND c.doc_id IS NULL ORDER BY d.doc_id"
+        "SELECT d.doc_id, d.title, d.summary, d.source, co.ticker FROM rag.document d "
+        "LEFT JOIN core.company co ON co.company_id = d.company_id "
+        "WHERE d.source = ANY(%s) "
+        "AND NOT EXISTS (SELECT 1 FROM rag.chunk c WHERE c.doc_id = d.doc_id)"
     )
-    params: list = [source]
+    params: list = [sources]
+    if since:
+        sql += " AND d.published_at >= %s"
+        params.append(since)
+    if until:
+        sql += " AND d.published_at <= %s"
+        params.append(until)
+    sql += " ORDER BY d.doc_id"
     if limit:
         sql += " LIMIT %s"
         params.append(limit)
@@ -236,10 +250,33 @@ def docs_without_chunks(conn, source: str, limit: int | None = None) -> list[tup
         return cur.fetchall()
 
 
-def insert_chunks(conn, rows: list[tuple]) -> int:
-    """rows: [(doc_id, chunk_idx, content, '[0.1,...]')]  (임베딩은 rag.vec_literal 결과)"""
+def chunk_embedding_type(conn) -> str | None:
+    """rag.chunk.embedding 열 형식 (예: 'halfvec(1024)'). 테이블이 없으면 None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+            "WHERE attrelid = to_regclass('rag.chunk') AND attname = 'embedding' AND NOT attisdropped"
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def database_size_bytes(conn) -> int:
+    """현재 DB 전체 크기 (Neon 무료 한도 확인용)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_database_size(current_database())")
+        return int(cur.fetchone()[0])
+
+
+def insert_chunks(conn, rows: list[tuple], vec_type: str = "vector") -> int:
+    """rows: [(doc_id, chunk_idx, content, '[0.1,...]')]  (임베딩은 rag.vec_literal 결과)
+
+    vec_type 은 열 형식(vector | halfvec)에 맞춘 형 변환 이름.
+    """
+    if vec_type not in ("vector", "halfvec"):
+        raise ValueError(f"지원하지 않는 벡터 형식: {vec_type}")
     sql = (
-        "INSERT INTO rag.chunk (doc_id, chunk_idx, content, embedding) VALUES (%s, %s, %s, %s::vector) "
+        f"INSERT INTO rag.chunk (doc_id, chunk_idx, content, embedding) VALUES (%s, %s, %s, %s::{vec_type}) "
         "ON CONFLICT (doc_id, chunk_idx) DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding"
     )
     with conn.cursor() as cur:

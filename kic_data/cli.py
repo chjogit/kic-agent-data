@@ -394,22 +394,22 @@ def cmd_show_pulse(args) -> int:
 
 
 def cmd_embed(args) -> int:
+    sources = args.source or list(rag.TARGET_SOURCES)
     embedder = rag.load_embedder(args.model)
-    total = 0
     with db.connect() as conn:
-        docs = db.docs_without_chunks(conn, args.source, args.limit)
-        _ok("대상 문서", f"{len(docs)}건 (source={args.source})")
-        for i in range(0, len(docs), args.batch):
-            batch = docs[i : i + args.batch]
-            items = [(doc_id, idx, text) for doc_id, title, summary in batch
-                     for idx, text in enumerate(rag.build_chunks(title, summary))]
-            if not items:
-                continue
-            vectors = embedder.encode([t for _, _, t in items])
-            rows = [(d, k, t, rag.vec_literal(v)) for (d, k, t), v in zip(items, vectors)]
-            total += db.insert_chunks(conn, rows)
-            print(f"       {min(i + args.batch, len(docs))}/{len(docs)} 문서 처리")
-    _ok("청크 적재", f"{total}건")
+        r = rag.ingest(conn, embedder, sources, args.limit, args.since, args.until, args.batch, args.dry_run)
+    mb = 1024 * 1024
+    _ok("대상", f"문서 {r['docs']}건 → 청크 {r['chunks']}건 (source={','.join(sources)})")
+    _ok("용량 추정", f"+{r['estimate_bytes'] / mb:.1f}MB (현재 {r['db_bytes'] / mb:.0f}MB, 상한 {r['limit_bytes'] / mb:.0f}MB)")
+    if r["stopped"]:
+        _fail("중단", "적재 후 상한을 넘을 것으로 추정되어 쓰지 않았습니다 (--limit·--since 로 범위를 줄이세요)")
+        return 1
+    if args.dry_run:
+        _ok("dry-run", "쓰기 없음")
+        return 0
+    for doc_id, ticker, why in r["failed"]:
+        _fail(f"doc {doc_id} {ticker or ''}", why)
+    _ok("청크 적재", f"{r['written']}건 (실패 문서 {len(r['failed'])}건)")
     return 0
 
 
@@ -1653,7 +1653,10 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-person-news"); a.add_argument("--pages", type=int, default=10)
     a.set_defaults(fn=cmd_person_news, topics=True)
     a = sub.add_parser("collect-news"); a.add_argument("--days", type=int, default=30); a.add_argument("--max-items", type=int, default=300); a.set_defaults(fn=cmd_news)
-    a = sub.add_parser("embed-docs"); a.add_argument("--source", default="naver_news"); a.add_argument("--model", default="bge-m3"); a.add_argument("--batch", type=int, default=64); a.add_argument("--limit", type=int, default=None); a.set_defaults(fn=cmd_embed)
+    a = sub.add_parser("embed-docs"); a.add_argument("--source", action="append", choices=rag.TARGET_SOURCES, help="여러 번 지정 가능 (기본: 대상 4개 전부)")
+    a.add_argument("--model", default="upstage"); a.add_argument("--batch", type=int, default=64); a.add_argument("--limit", type=int, default=None, help="처리할 문서 건수 상한")
+    a.add_argument("--since", default=None, help="발행일 YYYY-MM-DD 이후"); a.add_argument("--until", default=None, help="발행일 YYYY-MM-DD 이전")
+    a.add_argument("--dry-run", action="store_true", help="건수·예상 용량만 출력하고 쓰지 않음"); a.set_defaults(fn=cmd_embed)
     a = sub.add_parser("collect-indices"); a.add_argument("--days", type=int, default=365); a.set_defaults(fn=cmd_indices)
     a = sub.add_parser("collect-disclosures"); a.add_argument("--days", type=int, default=365); a.add_argument("--types", default="A,B,I")
     a.add_argument("--bulk", action="store_true", help="국내는 시장 전체 공시에서 대상 종목만 (3개월 이내)"); a.set_defaults(fn=cmd_disclosures)
