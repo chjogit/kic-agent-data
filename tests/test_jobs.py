@@ -535,3 +535,25 @@ def test_after_kst_runs_once_per_day_after_close():
 def test_investor_flows_job_is_after_close():
     job = next(j for j in jobs.JOBS if j.name == "investor-flows")
     assert job.after_kst is not None and (job.after_kst.hour, job.after_kst.minute) >= (18, 0)
+    assert job.recheck_until_kst is not None and job.kwargs.get("only_lagging") is True
+
+
+def test_after_kst_recheck_until_evening_cutoff():
+    """네이버가 그날 수급을 늦게 올리므로(10-29 19:20 에도 미게시) 23:30 까지 1시간마다 다시 봄."""
+    from datetime import time as dtime
+
+    job = jobs.Job("f", "f", "cmd_x", every=jobs.DAY, after_kst=dtime(18, 30), recheck_until_kst=dtime(23, 30))
+    kst = jobs.KST
+    done = {"last_complete": datetime(2026, 10, 29, 19, 20, tzinfo=kst)}
+    assert jobs.due_reason(job, done, datetime(2026, 10, 29, 19, 50, tzinfo=kst), []) is None
+    assert jobs.due_reason(job, done, datetime(2026, 10, 29, 20, 20, tzinfo=kst), []) == "재확인"
+    assert jobs.next_due(job, done) == datetime(2026, 10, 29, 20, 15, tzinfo=kst)
+    # 마지막 재확인(23:00 완료) 뒤에는 다음 날 18:30 까지 쉼
+    late = {"last_complete": datetime(2026, 10, 29, 23, 0, tzinfo=kst)}
+    assert jobs.due_reason(job, late, datetime(2026, 10, 30, 0, 30, tzinfo=kst), []) is None
+    assert jobs.due_reason(job, late, datetime(2026, 10, 30, 10, 0, tzinfo=kst), []) is None
+    assert jobs.next_due(job, late) == datetime(2026, 10, 30, 18, 30, tzinfo=kst)
+    assert jobs.due_reason(job, late, datetime(2026, 10, 30, 18, 40, tzinfo=kst), []) == "기준 시각 이후"
+    # 오전에 수동으로 끝낸 것은 재확인 대상이 아님 (그날 18:30 에 한 번)
+    morning = {"last_complete": datetime(2026, 10, 30, 9, 0, tzinfo=kst)}
+    assert jobs.due_reason(job, morning, datetime(2026, 10, 30, 11, 0, tzinfo=kst), []) is None
