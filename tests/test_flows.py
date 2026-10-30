@@ -119,3 +119,53 @@ class LendingCommandTest(unittest.TestCase):
         self.assertEqual(written[0][0], 7)
         self.assertEqual(len(written[0][1]), 3)
         self.assertEqual(written[0][2], "fsc_lending")
+
+
+class InvestorFlowCommandTest(unittest.TestCase):
+    def _run(self, companies, latest, served, only_lagging=True):
+        from argparse import Namespace
+        from contextlib import nullcontext
+
+        from kic_data import cli
+
+        asked, written = [], []
+
+        def fetch(session, ticker, since):
+            asked.append(ticker)
+            return [{"trade_date": d} for d in served(ticker)]
+
+        with mock.patch.object(cli.db, "connect", return_value=nullcontext(None)), \
+             mock.patch.object(cli.db, "list_companies", return_value=companies), \
+             mock.patch.object(cli.db, "latest_price_and_flow_dates", return_value=latest), \
+             mock.patch.object(cli.db, "upsert_investor_flows", side_effect=lambda c, cid, rows, src: written.append(cid) or len(rows)), \
+             mock.patch.object(cli.investor_flow, "fetch_flows", side_effect=fetch), \
+             mock.patch.object(cli, "drop_incomplete_today", side_effect=lambda rows, market: rows):
+            rc = cli.cmd_investor_flows(Namespace(days=10, only_lagging=only_lagging))
+        return rc, asked, written
+
+    def test_only_lagging_skips_up_to_date(self):
+        d0, d1 = date(2026, 10, 28), date(2026, 10, 29)
+        companies = [(1, "000001", "a", None, None), (2, "000002", "b", None, None)]
+        latest = {1: (d1, d1), 2: (d1, d0)}  # 1 은 이미 시세 최신일까지 있음
+        rc, asked, written = self._run(companies, latest, lambda t: [d0, d1])
+        self.assertEqual((rc, asked, written), (0, ["000002"], [2]))
+
+    def test_stops_when_naver_has_not_posted(self):
+        d0, d1 = date(2026, 10, 28), date(2026, 10, 29)
+        companies = [(i, f"{i:06d}", str(i), None, None) for i in range(1, 7)]
+        latest = {i: (d1, d0) for i in range(1, 7)}
+        rc, asked, _ = self._run(companies, latest, lambda t: [d0])  # 네이버에 10-29 가 아직 없음
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(asked), cli_wait_stop())
+
+    def test_without_flag_fetches_all(self):
+        d0 = date(2026, 10, 28)
+        companies = [(1, "000001", "a", None, None), (2, "000002", "b", None, None)]
+        rc, asked, _ = self._run(companies, {}, lambda t: [d0], only_lagging=False)
+        self.assertEqual(asked, ["000001", "000002"])
+
+
+def cli_wait_stop() -> int:
+    from kic_data import cli
+
+    return cli.FLOW_WAIT_STOP

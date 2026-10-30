@@ -457,6 +457,16 @@ def fetch_investor_flows(conn, company_id: int, n: int = 60) -> list[dict]:
     return rows[::-1]
 
 
+def latest_price_and_flow_dates(conn, market: str) -> dict[int, tuple]:
+    """{company_id: (시세 마지막 거래일, 투자자별 수급 마지막 거래일)} (없으면 None)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT c.company_id, (SELECT max(trade_date) FROM core.price_daily p WHERE p.company_id = c.company_id), "
+            "(SELECT max(trade_date) FROM core.investor_flow_daily f WHERE f.company_id = c.company_id) "
+            "FROM core.company c WHERE c.market = %s", [market])
+        return {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+
+
 def fetch_reactions(conn, company_id: int, since) -> list[dict]:
     """[{source, published_at, score}] 뉴스·블로그·카페글 (점수 없으면 score=None)."""
     with conn.cursor() as cur:

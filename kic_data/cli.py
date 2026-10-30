@@ -1192,13 +1192,25 @@ def cmd_youtube(args) -> int:
     return 1 if bad else 0
 
 
+FLOW_WAIT_STOP = 3  # only_lagging: 연속 이만큼 종목이 시세 최신일 수급을 못 받으면 네이버 미게시로 보고 멈춤
+
+
 def cmd_investor_flows(args) -> int:
-    """국내 종목 투자자별 일별 순매수 (네이버 증권 공개 API, 키 불필요)."""
+    """국내 종목 투자자별 일별 순매수 (네이버 증권 공개 API, 키 불필요).
+
+    only_lagging: 수급이 이미 시세 마지막 거래일까지 있는 종목은 부르지 않습니다 (자동 실행기의 저녁 재확인용).
+    네이버는 그날 수급을 장 마감 뒤 몇 시간 지나 올리므로(10-29 19:20 KST 에도 미게시), 앞 종목들이 연속으로
+    못 받으면 나머지는 다음 재확인으로 넘겨 호출을 아낍니다."""
     s = make_session()
     since = date.today() - timedelta(days=args.days)
-    bad = 0
+    only_lagging = getattr(args, "only_lagging", False)
+    bad = waiting = 0
     with db.connect() as conn:
+        latest = db.latest_price_and_flow_dates(conn, "KR") if only_lagging else {}
         for cid, ticker, *_ in db.list_companies(conn, "KR"):
+            price_d, flow_d = latest.get(cid, (None, None))
+            if only_lagging and price_d and flow_d and flow_d >= price_d:
+                continue
             try:
                 rows = drop_incomplete_today(investor_flow.fetch_flows(s, ticker, since), "KR")
             except RuntimeError as exc:
@@ -1207,6 +1219,13 @@ def cmd_investor_flows(args) -> int:
                 continue
             n = db.upsert_investor_flows(conn, cid, rows, "naver_trend")
             _ok(f"KR:{ticker}", f"{n}행" + (f" ({rows[0]['trade_date']}~{rows[-1]['trade_date']})" if rows else ""))
+            if only_lagging and price_d and (not rows or rows[-1]["trade_date"] < price_d):
+                waiting += 1
+                if waiting >= FLOW_WAIT_STOP:
+                    print(f"[WAIT] {price_d} 수급이 네이버에 아직 없음 → 다음 재확인에서 이어서")
+                    break
+            else:
+                waiting = 0
     return 1 if bad else 0
 
 

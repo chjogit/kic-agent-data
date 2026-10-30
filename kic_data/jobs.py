@@ -35,6 +35,7 @@ STALE_RUNNING = timedelta(minutes=6)  # 함수가 시간 초과로 끊겨 runnin
 RETRY_AFTER_FAIL = timedelta(minutes=30)
 RETRY_AFTER_SKIP = timedelta(hours=1)
 RETRY_ONCE_WARN = timedelta(hours=6)  # 1회 작업이 일부 실패로 끝나면 이 간격으로 다시 (키 승인 대기 등)
+RECHECK_EVERY = HOUR  # recheck_until_kst 가 있는 작업의 그날 저녁 재확인 간격
 
 
 @dataclass
@@ -50,6 +51,7 @@ class Job:
     chunk: int = 6
     group: str = "매시간"
     after_kst: dtime | None = None  # 하루 한 번, 한국시간 이 시각 이후에만 (장 마감 뒤 확정되는 자료용)
+    recheck_until_kst: dtime | None = None  # after_kst 작업: 그날 끝낸 뒤에도 이 시각까지 RECHECK_EVERY 마다 다시
 
     def namespace(self) -> Namespace:
         return Namespace(**{k: (v() if callable(v) else v) for k, v in self.kwargs.items()})
@@ -162,10 +164,12 @@ JOBS: list[Job] = [
         {"days": 14, "videos": 3, "comments": 50, "rotate_rest": (40, 25), "order": "viewCount"},
         every=DAY, needs=DB + ("YOUTUBE_API_KEY",)),
     # ↑ 시총 상위 40 밖의 국내 약 170종목을 약 1주에 한 번씩 (검색 25회 × 100단위 ≈ 2,500 + 통계·댓글 ≈ 하루 2,600)
-    Job("investor-flows", "투자자별 순매수(외국인·기관·개인)", "cmd_investor_flows", {"days": 10}, every=DAY,
-        needs=DB, split=("KR",), chunk=50, after_kst=dtime(18, 30)),
+    Job("investor-flows", "투자자별 순매수(외국인·기관·개인)", "cmd_investor_flows", {"days": 10, "only_lagging": True},
+        every=DAY, needs=DB, split=("KR",), chunk=50, after_kst=dtime(18, 30), recheck_until_kst=dtime(23, 30)),
     # ↑ 네이버 비공식 API 라 종목당 하루 1회만. 투자자별 수치는 장 마감 뒤 확정되므로 한국시간 18:30 이후에 돌려
-    #   그날 수급까지 받음 (이전에는 마지막 완료 + 24시간이라 오전에 돌면 전 거래일까지만 들어와 가격보다 하루 늦었음)
+    #   그날 수급까지 받음 (이전에는 마지막 완료 + 24시간이라 오전에 돌면 전 거래일까지만 들어와 가격보다 하루 늦었음).
+    #   네이버 게시가 그보다 늦을 수 있어(10-29 19:20 에도 미게시) 23:30 까지 1시간마다 다시 보되, 이미 받은 종목은
+    #   부르지 않고 미게시면 묶음당 몇 종목만 보고 멈춤 → 종목당 실제 수신은 하루 1회
     Job("lending", "대차거래(코스피 전 종목, 공매도 대용)", "cmd_lending", {"days": 365, "max_days": 40},
         needs=DB, needs_any=DATA_GO),  # 빠진 거래일만 최근부터 40일씩 (1년치는 몇 시간에 걸쳐 채움, 이후엔 하루 1~2회 호출)
     Job("bond-issue", "회사채 발행 종목(표면이율·고정/변동·만기, 금융위원회)", "cmd_bond_issue", {"bas_dt": None},
@@ -424,8 +428,21 @@ def due_reason(job: Job, st: dict | None, now: datetime, missing: list[str]) -> 
     if job.every is ONCE:
         return None
     if job.after_kst is not None:  # 그날 기준 시각 이후 아직 끝내지 않았으면
-        return "기준 시각 이후" if complete < last_cutoff(job.after_kst, now) else None
+        if complete < last_cutoff(job.after_kst, now):
+            return "기준 시각 이후"
+        return "재확인" if _recheck_at(job, complete) <= now else None
     return "주기" if now - complete >= job.every - timedelta(minutes=5) else None
+
+
+def _recheck_at(job: Job, complete: datetime) -> datetime:
+    """after_kst 작업을 그날 저녁 다시 볼 시각. 재확인 대상이 아니거나 마감을 넘기면 다음 기준 시각."""
+    cut = last_cutoff(job.after_kst, complete)
+    nxt = cut + DAY
+    if job.recheck_until_kst is None:
+        return nxt
+    until = datetime.combine(cut.astimezone(KST).date(), job.recheck_until_kst, tzinfo=KST)
+    at = complete + RECHECK_EVERY - timedelta(minutes=5)
+    return at if at <= until else nxt
 
 
 def next_due(job: Job, st: dict | None) -> datetime | None:
@@ -435,7 +452,7 @@ def next_due(job: Job, st: dict | None) -> datetime | None:
     if job.every is ONCE:
         return None
     if job.after_kst is not None:
-        return last_cutoff(job.after_kst, st["last_complete"]) + DAY
+        return _recheck_at(job, st["last_complete"])
     return st["last_complete"] + job.every
 
 
