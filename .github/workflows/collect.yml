@@ -23,6 +23,7 @@ concurrency:
   cancel-in-progress: false
 env:
   DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  OPINION_DATABASE_URL: ${{ secrets.OPINION_DATABASE_URL }}   # 블로그·카페 전용 프로젝트(kic-opinion). 없으면 메인 하나로 동작
   FSC_API_KEY: ${{ secrets.FSC_API_KEY }}
   DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
   DART_API_KEY: ${{ secrets.DART_API_KEY }}
