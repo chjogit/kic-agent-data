@@ -198,4 +198,5 @@ def ingest(conn, embedder, sources=TARGET_SOURCES, limit: int | None = None, sin
             continue
         rows = [(doc_id, idx, text, vec_literal(v)) for (doc_id, idx, text), v in zip(items, vectors)]
         result["written"] += db.insert_chunks(conn, rows, vec_type)
+    result["tokens"] = getattr(embedder, "tokens", None)  # Upstage 사용 토큰 누계 (없으면 None)
     return result

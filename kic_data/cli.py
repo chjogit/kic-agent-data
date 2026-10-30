@@ -409,7 +409,7 @@ def cmd_embed(args) -> int:
         return 0
     for doc_id, ticker, why in r["failed"]:
         _fail(f"doc {doc_id} {ticker or ''}", why)
-    _ok("청크 적재", f"{r['written']}건 (실패 문서 {len(r['failed'])}건)")
+    _ok("청크 적재", f"{r['written']}건 (실패 문서 {len(r['failed'])}건, 사용 토큰 {r['tokens']})")
     return 0
 
 
