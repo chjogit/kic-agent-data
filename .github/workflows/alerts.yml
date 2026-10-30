@@ -1,0 +1,31 @@
+name: kic-alerts
+# 품질 알림(DB 용량·가격보다 늦은 데이터·수집 실행 멈춤·API 오류)을 GitHub Issue 로 동기화합니다.
+# 수집(kic-collect)이 멈춰도 알릴 수 있도록 수집과 별도로 돕니다.
+on:
+  schedule:
+    - cron: "40 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: kic-alerts
+  cancel-in-progress: false
+permissions:
+  contents: read
+  issues: write
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  OPINION_DATABASE_URL: ${{ secrets.OPINION_DATABASE_URL }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GITHUB_REPOSITORY: ${{ github.repository }}
+  PYTHONIOENCODING: utf-8
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m kic_data.cli alert-sync

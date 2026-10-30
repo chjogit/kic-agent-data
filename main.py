@@ -6,7 +6,7 @@
   POST /api/jobs/{name}/reset  1회 작업을 처음부터 다시 하도록 초기화 (CRON_SECRET 필요)
   GET  /api/jobs · /api/runs · /api/status · /api/features   JSON 조회
   GET  /quality                데이터 품질 대시보드 (web/quality_dashboard.html)
-  GET  /api/quality/overview · /api/quality/data · /api/quality/api/{name} · /api/quality/schema/{name} · /api/quality/anomalies
+  GET  /api/quality/overview · /api/quality/health · /api/quality/data · /api/quality/api/{name} · /api/quality/schema/{name} · /api/quality/anomalies
                                품질 조회 JSON (읽기 전용 트랜잭션)
 
 배포 방법은 docs/DEPLOY_VERCEL.md 를 보세요. 로컬 실행: uvicorn main:app --reload
@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from kic_data import db, jobs, quality, status
+from kic_data import alerts, db, jobs, quality, status
 
 KST = ZoneInfo("Asia/Seoul")
 app = FastAPI(title="KIC 데이터 수집", docs_url=None, redoc_url=None)
@@ -213,6 +213,24 @@ def quality_page(request: Request):
 def quality_overview(request: Request):
     _require_viewer(request)
     return _ok(_quality_db(quality.overview))
+
+
+@app.get("/api/quality/health")
+def quality_health(request: Request):
+    """프로젝트별 DB 용량 · 가격보다 늦은 데이터 · 마지막 수집 실행. kic-opinion 접속 정보가 없으면 '설정 안 됨'."""
+    _require_viewer(request)
+
+    def run(conn):
+        op = None
+        try:
+            op = alerts.connect_opinion()
+            return alerts.health(conn, op, op is not None)
+        except Exception:  # noqa: BLE001  kic-opinion 에 못 붙어도 main 정보는 보여 줌
+            return alerts.health(conn, None, True)
+        finally:
+            if op is not None:
+                op.close()
+    return _ok(_quality_db(run))
 
 
 @app.get("/api/quality/data")

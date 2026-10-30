@@ -11,10 +11,33 @@ import json
 from datetime import date, datetime
 
 from . import db
+from .config import env
 
 # 최신성 기준(일). 주말·휴일을 감안해 여유를 둡니다.
 FRESH_DAYS = {"price": 5, "index": 5, "news": 3, "blog": 3, "cafe": 3, "disclosure": 14, "trend": 4,
               "mention": 3, "pulse": 3, "macro_D": 10, "macro_M": 75, "feature": 3}
+
+# DB 용량 (Neon 무료 1GB). 경고 기준은 환경변수 DB_WARN_MB 로 바꿀 수 있습니다.
+DB_LIMIT_MB = 1024
+DB_WARN_MB = 900
+NEON_GAP_MB = 21  # Neon 콘솔의 logical size 는 pg_database_size 보다 이만큼 크게 나옴 (10-30 실측)
+
+
+def warn_threshold_mb() -> int:
+    try:
+        return max(1, int(env("DB_WARN_MB") or DB_WARN_MB))
+    except ValueError:
+        return DB_WARN_MB
+
+
+def db_usage(size_bytes: int | None, warn_mb: int | None = None) -> dict | None:
+    """DB 크기 → {mb, warn_mb, limit_mb, pct, over}. over 는 경고 기준 이상."""
+    if size_bytes is None:
+        return None
+    warn_mb = warn_mb or warn_threshold_mb()
+    mb = size_bytes / (1024 * 1024)
+    return {"mb": round(mb, 1), "warn_mb": warn_mb, "limit_mb": DB_LIMIT_MB,
+            "pct": round(mb / DB_LIMIT_MB * 100, 1), "over": mb >= warn_mb}
 
 
 def freshness(last, today: date, max_age: int) -> str:
@@ -41,6 +64,8 @@ def _q(conn, sql: str, params=None) -> list[tuple] | None:
 def collect(conn, today: date | None = None) -> dict:
     today = today or date.today()
     out: dict = {"checked_at": today.isoformat()}
+    size = _q(conn, "SELECT pg_database_size(current_database())")
+    out["db"] = db_usage(int(size[0][0])) if size else None
 
     companies = _q(conn, "SELECT company_id, market, ticker, name, corp_code, cik, sector, shares_outstanding "
                          "FROM core.company ORDER BY market, ticker") or []
@@ -118,6 +143,13 @@ def _s(v) -> str:
 def render(st: dict) -> str:
     today = date.fromisoformat(st["checked_at"])
     lines = [f"수집 현황 ({st['checked_at']} 기준)", ""]
+    u = st.get("db")
+    if u:
+        lines.append(f"[DB 용량] {u['mb']}MB / 한도 {u['limit_mb']}MB ({u['pct']}%)  경고 기준 {u['warn_mb']}MB")
+        if u["over"]:
+            lines.append(f"  [경고] DB 가 경고 기준 {u['warn_mb']}MB 를 넘었습니다. 한도({u['limit_mb']}MB)에 닿으면 수집 쓰기가 실패합니다. "
+                         f"(Neon 콘솔 수치는 이 값보다 약 {NEON_GAP_MB}MB 크게 보입니다)")
+        lines.append("")
     cos = st["companies"]
     lines.append(f"[종목] {len(cos)}개  (DART 고유번호 {sum(c['corp_code'] for c in cos if c['market'] == 'KR')}"
                  f"/{sum(c['market'] == 'KR' for c in cos)}, CIK {sum(c['cik'] for c in cos if c['market'] == 'US')}"
@@ -155,7 +187,7 @@ def render(st: dict) -> str:
     lines += [f"  {m['series_id']:<16}{(m['name'] or '')[:22]:<24}{m['rows']:>6}행 {_s(m['from'])}~{_s(m['to'])}  "
               f"{freshness(m['to'], today, FRESH_DAYS['macro_D' if m['frequency'] == 'D' else 'macro_M'])}"
               for m in st["macro"]] or ["  없음 (collect-macro)"]
-    lines += ["", "[문서] 출처별 (RAG 청크는 아직 적재하지 않기로 함)"]
+    lines += ["", "[문서] 출처별 (청크 = RAG 임베딩 적재 수, 대상 4개 소스만)"]
     lines += [f"  {d['source']:<12}{d['docs']:>7}건  종목 {d['companies']:>2}개  {_s(d['from'])}~{_s(d['to'])}  청크 {d['chunks']}"
               for d in st["documents"]] or ["  없음 (collect-news / collect-community)"]
     lines += ["", "[공시] 출처·유형별 (미분류 = event_type 키워드 미매칭)"]

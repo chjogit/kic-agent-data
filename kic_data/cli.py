@@ -4,6 +4,7 @@
   check-db         DB 연결·pgvector 확인
   apply-schema     sql/*.sql 적용
   check-sources    각 API 키가 동작하는지 1회씩 호출해 확인
+  alert-sync       품질 알림(용량·늦은 데이터·수집 멈춤·API 오류)을 GitHub Issue 로 동기화
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
   seed-companies   universe.py 의 종목을 core.company 에 등록
   sync-dart-codes  DART 고유번호를 KR 종목에 연결
@@ -79,6 +80,36 @@ def cmd_check_db(args) -> int:
     except Exception as exc:  # 접속 문자열이 메시지에 섞이지 않도록 형식만 출력
         _fail("DB 연결", type(exc).__name__ + " (DATABASE_URL, 네트워크, Neon 프로젝트 상태 확인)")
         return 1
+
+
+def cmd_alert_sync(args) -> int:
+    """품질 알림을 GitHub Issue 로 동기화 (DB 는 읽기만). 토큰이 없거나 GitHub 오류여도 0 으로 끝남."""
+    from . import alerts, quality
+
+    conn = db.connect()
+    conn.read_only = True
+    op = None
+    try:
+        try:
+            ov = quality.overview(conn)
+        except Exception:  # noqa: BLE001  quality 스키마가 아직 없을 때
+            conn.rollback()
+            ov = None
+        try:
+            op = alerts.connect_opinion()
+        except Exception:  # noqa: BLE001
+            op = None
+        items = alerts.build_alerts(ov, alerts.health(conn, op, bool(env(alerts.OPINION_URL_ENV))))
+    finally:
+        if op is not None:
+            op.close()
+        conn.close()
+    res = alerts.sync_issues(alerts.get_client(), items)
+    print(f"알림 {len(items)}건 | 열림 {res['opened']} · 갱신 {res['updated']} · 닫힘 {res['closed']} · 그대로 {res['unchanged']}"
+          + (f" | 건너뜀: {res['skipped']}" if res["skipped"] else ""))
+    for e in res["errors"]:
+        print(f"  [오류] {e}")
+    return 0
 
 
 def cmd_apply_schema(args) -> int:
@@ -1644,6 +1675,7 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check-db").set_defaults(fn=cmd_check_db)
     sub.add_parser("apply-schema").set_defaults(fn=cmd_apply_schema)
+    sub.add_parser("alert-sync", help="품질 알림을 GitHub Issue 로 동기화").set_defaults(fn=cmd_alert_sync)
     sub.add_parser("check-sources").set_defaults(fn=cmd_check_sources)
     a = sub.add_parser("status"); a.add_argument("--json", default=None, help="결과를 JSON 파일로도 저장"); a.set_defaults(fn=cmd_status)
     sub.add_parser("seed-companies").set_defaults(fn=cmd_seed)
