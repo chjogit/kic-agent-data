@@ -1,0 +1,33 @@
+name: kic-archive-dart
+# DART A·B 공시 원문을 Object Storage 로 보관 (수동 실행). dry_run 으로 건수·예상 용량부터 확인하세요.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true 면 건수·예상 용량만 출력"
+        default: "true"
+concurrency:
+  group: kic-archive-dart
+  cancel-in-progress: false
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  DART_API_KEY: ${{ secrets.DART_API_KEY }}
+  AWS_ENDPOINT_URL_S3: ${{ secrets.AWS_ENDPOINT_URL_S3 }}
+  NEON_STORAGE_BUCKET: disclosure
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  PYTHONIOENCODING: utf-8
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m kic_data.cli apply-schema
+      - run: python -m kic_data.cli archive-dart ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
