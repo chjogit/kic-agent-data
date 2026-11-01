@@ -32,6 +32,8 @@
     <div class="kpis" id="overview-kpis"></div>
     <h3 style="margin-top:0;">원천 API</h3>
     <div class="grid" id="overview-cards"></div>
+    <h3 class="sub">용량 · 최신성 · 수집 실행</h3>
+    <div class="grid static" id="health-cards"><p style="color:var(--dim);">불러오는 중…</p></div>
   </section>
 
   <section id="data" class="section">
@@ -109,6 +111,7 @@ async function getOverview() {
 }
 
 async function loadOverview() {
+  loadHealth();
   const data = await getOverview();
   document.getElementById('updated').textContent = data.generated_at ? ts(data.generated_at) : '—';
   document.getElementById('overview-cards').innerHTML = (data.apis || []).map(a => `
@@ -129,6 +132,27 @@ async function loadOverview() {
     ['24시간 경고', ac.warn || 0, (ac.warn ? 'warn' : '')], ['24시간 오류', ac.error || 0, (ac.error ? 'error' : '')],
   ].map(([l, v, c]) => `<div class="kpi ${c}" ${l.startsWith('24') ? `style="cursor:pointer" onclick="show('anomalies')"` : ''}>
       <div class="label">${l}</div><div class="value">${esc(v)}</div></div>`).join('');
+}
+
+async function loadHealth() {
+  const el = document.getElementById('health-cards');
+  const h = await fetchJSON('/api/quality/health');
+  if (!h) { el.innerHTML = '<p style="color:var(--dim);">용량·최신성 정보를 불러올 수 없습니다. (/api/quality/health)</p>'; return; }
+  const cap = (h.capacity || []).map(c => !c.configured
+    ? `<div class="card"><strong>DB 용량 · ${esc(c.project)}</strong><div style="margin-top:6px;color:var(--dim);">설정 안 됨</div></div>`
+    : c.error
+      ? `<div class="card"><strong>DB 용량 · ${esc(c.project)}</strong><div style="margin-top:6px;color:var(--dim);">${esc(c.error)}</div></div>`
+      : `<div class="card"><div><span class="light ${c.over ? 'warn' : 'ok'}"></span><strong>DB 용량 · ${esc(c.project)}</strong></div>
+          <div style="margin-top:6px;font-size:0.9rem;">${esc(c.mb)}MB / ${esc(c.limit_mb)}MB (${esc(c.pct)}%)</div>
+          <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">경고 기준 ${esc(c.warn_mb)}MB${c.over ? ' · 초과' : ''}</div></div>`);
+  const late = (h.late || []).map(d => `<div class="card"><div><span class="light ${d.late_companies ? 'warn' : 'ok'}"></span><strong>${esc(d.label)}</strong></div>
+      <div style="margin-top:6px;font-size:0.9rem;">가격보다 늦은 종목 ${esc(d.late_companies)}/${esc(d.total)}</div>
+      <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">${d.late_companies ? '최대 ' + esc(d.max_days_late) + '일 늦음' : '모두 같은 날까지'}</div></div>`);
+  const t = h.tick || {};
+  const tick = `<div class="card"><div><span class="light ${t.unknown ? 'unknown' : (t.stalled ? 'warn' : 'ok')}"></span><strong>수집 실행</strong></div>
+      <div style="margin-top:6px;font-size:0.9rem;">${t.unknown ? '기록을 읽지 못함' : (t.last ? '마지막 ' + ts(t.last) + ' (' + esc(t.hours_ago) + '시간 전)' : '실행 기록 없음')}</div>
+      <div style="font-size:0.8rem;color:var(--dim);margin-top:4px;">${t.stalled ? '멈춤 의심 · 기준 ' + esc(t.limit_hours) + '시간' : ''}</div></div>`;
+  el.innerHTML = [...cap, ...late, tick].join('');
 }
 
 async function loadApis() {
