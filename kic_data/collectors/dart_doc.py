@@ -142,7 +142,12 @@ RETRIES = 3
 
 
 def fetch_document(session, rcept_no: str) -> dict[str, str]:
-    """원문 zip. 큰 파일(약 10MB)이라 접속 시간 초과가 가끔 나서, 이 호출만은 몇 번 다시 시도합니다
+    """원문 zip 을 받아 {파일명: 본문} 으로."""
+    return parse_zip(fetch_document_raw(session, rcept_no))
+
+
+def fetch_document_raw(session, rcept_no: str) -> bytes:
+    """원문 zip 바이트 그대로 (보관용). 큰 파일(약 10MB)이라 접속 시간 초과가 가끔 나서, 이 호출만은 몇 번 다시 시도합니다
     (공용 get() 은 한 번 접속에 실패하면 10분 동안 같은 원천을 건너뛰므로 그 표시를 지우고 다시)."""
     import time
 
@@ -168,4 +173,4 @@ def fetch_document(session, rcept_no: str) -> dict[str, str]:
         msg = decode(content[:300])
         status = re.search(r"<status>(\d+)</status>|\"status\"\s*:\s*\"(\d+)\"", msg)
         raise RuntimeError(f"[dart] 원문 없음 {status.group(1) or status.group(2) if status else ''}".strip())
-    return parse_zip(content)
+    return content

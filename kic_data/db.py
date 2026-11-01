@@ -129,6 +129,54 @@ def annual_reports(conn, company_id: int, limit: int = 3) -> list[tuple]:
         return cur.fetchall()
 
 
+def archive_candidates(conn, categories: list[str], since: str | None = None, limit: int | None = None) -> list[tuple]:
+    """아직 보관하지 않은 국내 종목 공시 → [(rcept_no, company_id, ticker, category, rcept_dt)] 최근 접수일순."""
+    sql = ("SELECT d.rcept_no, d.company_id, co.ticker, d.category, d.rcept_dt FROM core.disclosure d "
+           "JOIN core.company co ON co.company_id = d.company_id "
+           "WHERE co.market = 'KR' AND d.category = ANY(%s) "
+           "AND NOT EXISTS (SELECT 1 FROM ops.dart_archive a WHERE a.rcept_no = d.rcept_no)")
+    params: list = [categories]
+    if since:
+        sql += " AND d.rcept_dt >= %s"
+        params.append(since)
+    sql += " ORDER BY d.rcept_dt DESC, d.rcept_no DESC"
+    if limit:
+        sql += " LIMIT %s"
+        params.append(limit)
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def archive_used_bytes(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT coalesce(sum(size_bytes), 0) FROM ops.dart_archive")
+        return int(cur.fetchone()[0])
+
+
+def archive_avg_bytes(conn) -> dict[str, float]:
+    """유형별 보관본 평균 크기 (예상 용량 계산용). 보관본이 없으면 빈 dict."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT category, avg(size_bytes) FROM ops.dart_archive WHERE size_bytes > 0 GROUP BY category")
+        return {c: float(a) for c, a in cur.fetchall()}
+
+
+def archive_save(conn, rcept_no: str, company_id: int, ticker: str, category: str, object_key: str, size_bytes: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO ops.dart_archive (rcept_no, company_id, ticker, category, object_key, size_bytes) "
+            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (rcept_no) DO NOTHING",
+            [rcept_no, company_id, ticker, category, object_key, size_bytes])
+    conn.commit()
+
+
+def archive_key(conn, rcept_no: str) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT object_key FROM ops.dart_archive WHERE rcept_no = %s", [rcept_no])
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def report_parsed(conn, company_id: int, fiscal_year: int, version: str | None = None) -> str | None:
     """이미 읽은 접수번호. version 을 주면 그 파서 버전 표시('parser:v2')가 found 에 있을 때만 읽은 것으로 봄."""
     with conn.cursor() as cur:

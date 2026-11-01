@@ -5,3 +5,4 @@ requests>=2.31
 yfinance>=0.2.40
 pandas>=2.0
 tzdata
+boto3>=1.34              # DART 원문 보관(archive-dart): Neon Object Storage(S3 호환)
