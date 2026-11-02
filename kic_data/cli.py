@@ -5,6 +5,8 @@
   apply-schema     sql/*.sql 적용
   check-sources    각 API 키가 동작하는지 1회씩 호출해 확인
   purge-opinion-docs  블로그·카페 문서 보관 기한 정리 (--dry-run 으로 건수 확인)
+  alert-sync       품질 알림(용량·늦은 데이터·수집 멈춤·API 오류)을 GitHub Issue 로 동기화
+  archive-dart     DART A·B 공시 원문을 Object Storage 에 보관 (--dry-run 으로 건수·용량 확인)
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
   seed-companies   universe.py 의 종목을 core.company 에 등록
   sync-dart-codes  DART 고유번호를 KR 종목에 연결
@@ -80,6 +82,36 @@ def cmd_check_db(args) -> int:
     except Exception as exc:  # 접속 문자열이 메시지에 섞이지 않도록 형식만 출력
         _fail("DB 연결", type(exc).__name__ + " (DATABASE_URL, 네트워크, Neon 프로젝트 상태 확인)")
         return 1
+
+
+def cmd_alert_sync(args) -> int:
+    """품질 알림을 GitHub Issue 로 동기화 (DB 는 읽기만). 토큰이 없거나 GitHub 오류여도 0 으로 끝남."""
+    from . import alerts, quality
+
+    conn = db.connect()
+    conn.read_only = True
+    op = None
+    try:
+        try:
+            ov = quality.overview(conn)
+        except Exception:  # noqa: BLE001  quality 스키마가 아직 없을 때
+            conn.rollback()
+            ov = None
+        try:
+            op = alerts.connect_opinion()
+        except Exception:  # noqa: BLE001
+            op = None
+        items = alerts.build_alerts(ov, alerts.health(conn, op, bool(env(alerts.OPINION_URL_ENV))))
+    finally:
+        if op is not None:
+            op.close()
+        conn.close()
+    res = alerts.sync_issues(alerts.get_client(), items)
+    print(f"알림 {len(items)}건 | 열림 {res['opened']} · 갱신 {res['updated']} · 닫힘 {res['closed']} · 그대로 {res['unchanged']}"
+          + (f" | 건너뜀: {res['skipped']}" if res["skipped"] else ""))
+    for e in res["errors"]:
+        print(f"  [오류] {e}")
+    return 0
 
 
 def cmd_apply_schema(args) -> int:
@@ -799,13 +831,38 @@ def cmd_purge_opinion(args) -> int:
     return 0
 
 
+def cmd_archive_dart(args) -> int:
+    """DART A·B 공시 원문을 Object Storage 에 보관 (접수번호 기준 멱등, 누적 상한 기본 4GB)."""
+    from . import dart_archive, storage
+
+    store = None if args.dry_run else storage.get_store()
+    with db.connect() as conn:
+        r = dart_archive.run(conn, make_session(), store, args.since, args.limit, args.cap_gb, args.dry_run)
+    mb = 1024 * 1024
+    _ok("대상", f"A·B 공시 {r['targets']}건, 예상 +{r['estimate_bytes'] / mb:.0f}MB "
+                f"(보관 {r['used_bytes'] / mb:.0f}MB, 상한 {r['cap_bytes'] / mb:.0f}MB)")
+    if args.dry_run:
+        _ok("dry-run", "쓰기 없음")
+        return 0
+    if r["skipped"]:
+        missing = storage.missing_settings()
+        _fail("건너뜀", f"{r['skipped']}: 필요한 환경변수 {', '.join(missing)}")
+        return 1
+    if r["skipped_cap"]:
+        _fail("상한", f"누적 상한에 닿아 못 올린 공시 {r['skipped_cap']}건 (더 오래된 것)")
+    for rcept_no, why in r["failed"]:
+        _fail(rcept_no, why)
+    _ok("보관", f"{r['uploaded']}건 {r['uploaded_bytes'] / mb:.0f}MB (실패 {len(r['failed'])}건)")
+    return 1 if r["failed"] else 0
+
+
 def cmd_report_exposure(args) -> int:
     """사업보고서 원문에서 기업 고유 거시 노출(환율 민감도·외화 자산부채·수출 비중·외환 파생)을 뽑아 저장.
     같은 접수번호를 이미 읽었으면 건너뜁니다 (--force 로 다시)."""
-    from . import exposure_parse
-    from .collectors import dart_doc
+    from . import dart_archive, exposure_parse, storage
 
     s = make_session()
+    store = storage.get_store()
     bad = 0
     with db.connect() as conn:
         for cid, ticker, name, *_ in db.list_companies(conn, "KR"):
@@ -823,7 +880,7 @@ def cmd_report_exposure(args) -> int:
                 if y != fy:
                     break
                 try:
-                    files, rcept, rdt = dart_doc.fetch_document(s, rc), rc, dt
+                    files, rcept, rdt = dart_archive.fetch_files(conn, store, s, rc), rc, dt  # 보관본이 있으면 DART 를 다시 부르지 않음
                     break
                 except RuntimeError as exc:
                     last_err = str(exc)
@@ -1670,6 +1727,7 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check-db").set_defaults(fn=cmd_check_db)
     sub.add_parser("apply-schema").set_defaults(fn=cmd_apply_schema)
+    sub.add_parser("alert-sync", help="품질 알림을 GitHub Issue 로 동기화").set_defaults(fn=cmd_alert_sync)
     sub.add_parser("check-sources").set_defaults(fn=cmd_check_sources)
     a = sub.add_parser("status"); a.add_argument("--json", default=None, help="결과를 JSON 파일로도 저장"); a.set_defaults(fn=cmd_status)
     sub.add_parser("seed-companies").set_defaults(fn=cmd_seed)
@@ -1716,6 +1774,10 @@ def main(argv=None) -> int:
     a = sub.add_parser("purge-opinion-docs", help="블로그·카페 문서 보관 기한 정리 (일별 집계를 남기고 삭제)")
     a.add_argument("--days", type=int, default=None, help="보관 일수 (기본 30, 환경변수 RETENTION_DAYS)")
     a.add_argument("--dry-run", action="store_true", help="지울 건수·회수 예상만 출력"); a.set_defaults(fn=cmd_purge_opinion)
+    a = sub.add_parser("archive-dart", help="DART A·B 공시 원문을 Object Storage 에 보관 (멱등, 누적 4GB 상한)")
+    a.add_argument("--since", default=None, help="접수일 YYYY-MM-DD 이후만"); a.add_argument("--limit", type=int, default=None, help="올릴 공시 건수 상한")
+    a.add_argument("--cap-gb", type=float, default=None, help="누적 상한 GB (기본 4, 환경변수 DART_ARCHIVE_CAP_GB)")
+    a.add_argument("--dry-run", action="store_true", help="대상 건수·예상 용량만 출력"); a.set_defaults(fn=cmd_archive_dart)
     a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율·이자율 민감도·외화 자산부채·수출 비중·외환 파생·가격변동 발췌")
     a.add_argument("--force", action="store_true", help="이미 읽은 원문도 다시")
     a.set_defaults(fn=cmd_report_exposure)
