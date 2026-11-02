@@ -57,12 +57,13 @@ def test_opinion_falls_back_to_main_without_setting(monkeypatch):
 
 
 def test_opinion_syncs_companies_and_closes(monkeypatch):
-    op = Conn([(1, "KR", "005930")])
-    m = Conn([(1, "KR", "005930", "삼성전자"), (2, "KR", "000660", "SK하이닉스")])
+    # 종목 맞춤 다음 시퀀스 맞춤(#14): 메인 최대 doc_id 0, kic-opinion 시퀀스 미사용 → setval 1회
+    op = Conn([(1, "KR", "005930")], [("rag.document_doc_id_seq",)], [(1, False, 0)], [])
+    m = Conn([(1, "KR", "005930", "삼성전자"), (2, "KR", "000660", "SK하이닉스")], [(0,)])
     monkeypatch.setattr(db, "connect_opinion", lambda: op)
     with db.opinion(m) as o:
         assert o is op
-    assert op.closed and op.commits == 1
+    assert op.closed and op.commits == 2
     inserted = [p for s, p in op.log if s.startswith("INSERT")][0]
     assert inserted == [(2, "KR", "000660", "SK하이닉스")]
 

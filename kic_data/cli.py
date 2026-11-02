@@ -119,11 +119,13 @@ def cmd_apply_schema(args) -> int:
     with db.connect() as conn:
         for name in db.apply_schema(conn, lock_timeout=SCHEMA_LOCK_TIMEOUT, busy=busy):
             _ok("적용", name)
-    oc = db.connect_opinion()   # kic-opinion 이 설정돼 있으면 그쪽 스키마도 맞춤
-    if oc is not None:
-        with oc:
-            for name in db.apply_opinion_schema(oc):
-                _ok("적용", name)
+        oc = db.connect_opinion()   # kic-opinion 이 설정돼 있으면 그쪽 스키마·시퀀스도 맞춤 (메인은 최대값만 읽음)
+        if oc is not None:
+            with oc:
+                for name in db.apply_opinion_schema(oc):
+                    _ok("적용", name)
+                for key, val in db.sync_opinion_sequences(conn, oc).items():
+                    _ok("시퀀스", f"kic-opinion {key} → {val}")
     for name in busy:
         _fail(name, f"다른 연결이 테이블을 쓰고 있어 잠금을 {SCHEMA_LOCK_TIMEOUT} 안에 못 잡음 → 건너뜀 (다음 실행에서 다시)")
     return 1 if busy else 0

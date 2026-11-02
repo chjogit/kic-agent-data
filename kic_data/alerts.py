@@ -31,6 +31,8 @@ WHERE co.market = 'KR'
 """
 LATE_DATASETS = (("investor_flow", "투자자별 수급", 2), ("stock_lending", "주식 대차잔고", 3))   # (이름, 표시, LATE_SQL 열 위치)
 LAST_TICK_SQL = "SELECT max(started_at) FROM ops.job_run"
+OPINION_DOCS = (("naver_blog", "블로그", "blog"), ("naver_cafe", "카페", "cafe"))   # (출처, 표시, status.FRESH_DAYS 키)
+OPINION_DOCS_SQL = "SELECT source, count(*), max(published_at) FROM rag.document WHERE source = ANY(%s) GROUP BY source"
 
 
 # ---------------------------------------------------------------- 용량
@@ -129,10 +131,36 @@ def fetch_tick(conn, now: datetime | None = None) -> dict:
     return tick_status(last, now)
 
 
+def fetch_opinion_docs(main_conn, opinion_conn=None, opinion_configured: bool | None = None,
+                       today: date | None = None) -> list[dict]:
+    """블로그·카페 건수·최신일·최신성. kic-opinion 이 설정돼 있으면 그쪽에서 읽고(메인의 옛 행으로 '오래됨' 오경보 방지),
+    설정돼 있는데 연결이 없으면 '접속 실패'로 비워 둡니다. 설정이 없으면 메인에서 읽습니다."""
+    configured = opinion_configured if opinion_configured is not None else opinion_conn is not None
+    if configured and opinion_conn is None:
+        return [{"source": s, "label": lb, "project": "kic-opinion", "error": "접속 실패"} for s, lb, _ in OPINION_DOCS]
+    conn, project = (opinion_conn, "kic-opinion") if configured else (main_conn, "main")
+    today = today or datetime.now(timezone(timedelta(hours=9))).date()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(OPINION_DOCS_SQL, [[s for s, _, _ in OPINION_DOCS]])
+            got = {r[0]: r[1:] for r in cur.fetchall()}
+    except Exception:  # noqa: BLE001  표가 아직 없을 때 등
+        conn.rollback()
+        got = {}
+    out = []
+    for src, label, fk in OPINION_DOCS:
+        n, last = got.get(src, (0, None))
+        out.append({"source": src, "label": label, "project": project, "docs": int(n), "last": last,
+                    "freshness": status.freshness(last, today, status.FRESH_DAYS[fk])})
+    return out
+
+
 def health(main_conn, opinion_conn=None, opinion_configured: bool | None = None, now: datetime | None = None) -> dict:
-    """대시보드 /api/quality/health: 프로젝트별 용량 + 늦은 데이터 + 수집 실행."""
+    """대시보드 /api/quality/health: 프로젝트별 용량 + 늦은 데이터 + 수집 실행 + 블로그·카페 건수·최신성(kic-opinion 우선)."""
+    today = (now.astimezone(timezone(timedelta(hours=9))).date() if now else None)
     return {"capacity": fetch_capacity(main_conn, opinion_conn, opinion_configured), "late": fetch_late(main_conn),
-            "tick": fetch_tick(main_conn, now)}
+            "tick": fetch_tick(main_conn, now),
+            "opinion_docs": fetch_opinion_docs(main_conn, opinion_conn, opinion_configured, today)}
 
 
 # ---------------------------------------------------------------- 알림 항목

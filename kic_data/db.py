@@ -28,14 +28,17 @@ OPINION_URL_ENV = "OPINION_DATABASE_URL"   # 블로그·카페 전용 프로젝�
 OPINION_SOURCES = ("naver_blog", "naver_cafe")
 
 
-def connect_opinion():
+def connect_opinion(read_only: bool = False):
     """kic-opinion 연결. 접속 정보(환경변수)가 없으면 None → 호출 쪽이 메인 연결로 대체합니다."""
     url = env(OPINION_URL_ENV)
     if not url:
         return None
     import psycopg
 
-    return psycopg.connect(url, connect_timeout=30, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
+    conn = psycopg.connect(url, connect_timeout=30, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
+    if read_only:
+        conn.read_only = True
+    return conn
 
 
 @contextmanager
@@ -47,6 +50,7 @@ def opinion(main_conn):
         return
     try:
         sync_opinion_companies(main_conn, conn)
+        sync_opinion_sequences(main_conn, conn)
         yield conn
     finally:
         conn.close()
@@ -79,6 +83,38 @@ def sync_opinion_companies(main_conn, oconn) -> int:
                             "ON CONFLICT (company_id) DO NOTHING", new)
         oconn.commit()
     return len(new)
+
+
+# 메인에서 키를 그대로 복사한 kic-opinion 의 자동 증가 열 (테이블, 열)
+OPINION_SEQUENCES = (("rag.document", "doc_id"),)
+# kic-opinion 새 키는 메인 최대값 + 이 간격부터. 메인은 뉴스로 계속 늘어나므로, 바로 위에서 시작하면 곧 두 프로젝트의 키가 겹침
+OPINION_ID_GAP = 1_000_000_000
+
+
+def sync_opinion_sequences(main_conn, oconn) -> dict[str, int]:
+    """kic-opinion 시퀀스를 메인 최대값보다 크게 맞춥니다 (메인은 읽기만, 여러 번 실행해도 같음).
+    - kic-opinion 시퀀스·최대값이 아직 메인 최대값 이하면 → 메인 최대값 + OPINION_ID_GAP
+    - 이미 메인보다 크면 → 기존 행과 부딪치지 않게만 (시퀀스 < kic-opinion 최대값일 때 최대값으로)
+    바꾼 시퀀스 {"테이블.열": 새 값} 을 돌려줍니다 (바꿀 것이 없으면 빈 dict)."""
+    changed: dict[str, int] = {}
+    for table, col in OPINION_SEQUENCES:
+        with main_conn.cursor() as cur:
+            cur.execute(f"SELECT coalesce(max({col}), 0) FROM {table}")
+            main_max = int(cur.fetchall()[0][0])
+        with oconn.cursor() as cur:
+            cur.execute("SELECT pg_get_serial_sequence(%s, %s)", [table, col])
+            seq = cur.fetchall()[0][0]
+            cur.execute(f"SELECT last_value, is_called, (SELECT coalesce(max({col}), 0) FROM {table}) FROM {seq}")
+            last, called, op_max = cur.fetchall()[0]
+        used = int(last) if called else int(last) - 1   # 이미 나눠 준 마지막 값
+        op_max = int(op_max)
+        target = main_max + OPINION_ID_GAP if max(used, op_max) <= main_max else op_max
+        if target > used:
+            with oconn.cursor() as cur:
+                cur.execute("SELECT setval(%s, %s, true)", [seq, target])
+            oconn.commit()
+            changed[f"{table}.{col}"] = target
+    return changed
 
 
 def apply_opinion_schema(conn) -> list[str]:
