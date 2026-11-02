@@ -138,36 +138,18 @@ def parse_zip(zip_bytes: bytes) -> dict[str, str]:
         return {n: decode(zf.read(n)) for n in names if n.lower().endswith((".xml", ".htm", ".html"))}
 
 
-RETRIES = 3
-
-
 def fetch_document(session, rcept_no: str) -> dict[str, str]:
     """원문 zip 을 받아 {파일명: 본문} 으로."""
     return parse_zip(fetch_document_raw(session, rcept_no))
 
 
 def fetch_document_raw(session, rcept_no: str) -> bytes:
-    """원문 zip 바이트 그대로 (보관용). 큰 파일(약 10MB)이라 접속 시간 초과가 가끔 나서, 이 호출만은 몇 번 다시 시도합니다
-    (공용 get() 은 한 번 접속에 실패하면 10분 동안 같은 원천을 건너뛰므로 그 표시를 지우고 다시)."""
-    import time
-
-    from .. import http_util
-
-    last = None
-    for attempt in range(RETRIES):
-        try:
-            response = get(session, "dart-doc", f"{BASE}/document.xml",
-                           params={"crtfc_key": env("DART_API_KEY", required=True), "rcept_no": rcept_no},
-                           timeout=90, limiter=_limiter)
-            break
-        except RuntimeError as exc:
-            last = exc
-            if "요청 실패" not in str(exc) and "접속 안 됨" not in str(exc):
-                raise
-            http_util._down.pop("dart", None)
-            time.sleep(3 * (attempt + 1))
-    else:
-        raise last
+    """원문 zip 바이트 그대로 (보관용). 접속 재시도는 세션의 국내 어댑터(접속 4번, 지수 백오프+지터)에만 맡깁니다.
+    여기서 다시 감싸 재시도하면 곱해져 DART 장애 때 원문 1건이 3분 넘게 걸리므로 하지 않습니다.
+    접속에 실패하면 공용 get() 이 'dart' 를 10분 동안 건너뛰게 표시해, 같은 실행의 다음 원문은 기다리지 않고 바로 실패합니다."""
+    response = get(session, "dart-doc", f"{BASE}/document.xml",
+                   params={"crtfc_key": env("DART_API_KEY", required=True), "rcept_no": rcept_no},
+                   timeout=90, limiter=_limiter)
     content = response.content
     if not content.startswith(b"PK"):  # 오류는 XML/JSON 으로 옴
         msg = decode(content[:300])

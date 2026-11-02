@@ -19,6 +19,7 @@ def domestic_retry() -> Retry:
     return Retry(
         total=5,
         connect=3,
+        read=1,   # 읽기 시간 초과는 한 번만 (큰 원문 90초 × 반복으로 실행 예산을 넘기지 않게)
         backoff_factor=2.0,
         backoff_jitter=2.0,
         backoff_max=30,

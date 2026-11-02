@@ -98,3 +98,67 @@ def test_failure_cache_expires_within_a_day(monkeypatch):
         assert len(calls) == 2
     finally:
         http_util._down.clear()
+
+
+def test_dart_doc_raw_does_not_stack_retries(monkeypatch):
+    """원문 1건은 get() 한 번만 부른다 (어댑터 재시도와 겹쳐 접속 12번이 되지 않게). 접속 실패 뒤엔 다음 원문도 바로 실패."""
+    from kic_data import http_util
+    from kic_data.collectors import dart_doc
+
+    monkeypatch.setenv("DART_API_KEY", "k")
+    monkeypatch.setattr(dart_doc._limiter, "wait", lambda: None)
+    http_util._down.clear()
+    calls = []
+
+    class S:
+        def get(self, *a, **k):
+            calls.append(1)
+            raise http_util.requests.ConnectTimeout()
+
+    with pytest.raises(RuntimeError, match="요청 실패"):
+        dart_doc.fetch_document_raw(S(), "20261030000001")
+    assert len(calls) == 1
+    with pytest.raises(RuntimeError, match="접속 안 됨"):
+        dart_doc.fetch_document_raw(S(), "20261030000002")
+    assert len(calls) == 1          # 두 번째 원문은 기다리지 않고 건너뜀
+    http_util._down.clear()
+
+
+def test_domestic_retry_limits_read_retries():
+    from kic_data import http_util
+
+    r = http_util.domestic_retry()
+    assert r.read == 1 and r.connect == 3
+
+
+def test_dart_doc_does_not_wrap_adapter_retry(monkeypatch):
+    """원문 받기는 어댑터 재시도만 쓰고(겹쳐 재시도 안 함), 접속 실패 뒤 같은 실행의 다음 원문은 바로 실패 (FAIL 1)."""
+    from kic_data.collectors import dart_doc
+
+    monkeypatch.setenv("DART_API_KEY", "test")
+    monkeypatch.setattr(dart_doc._limiter, "wait", lambda: None)
+    calls = []
+
+    class S:
+        def get(self, *a, **k):
+            calls.append(1)
+            raise requests.ConnectTimeout("x")
+
+    http_util._down.clear()
+    try:
+        with pytest.raises(RuntimeError, match="요청 실패"):
+            dart_doc.fetch_document_raw(S(), "20261030000001")
+        with pytest.raises(RuntimeError, match="건너뜀"):
+            dart_doc.fetch_document_raw(S(), "20261030000002")
+        assert len(calls) == 1 and "dart" in http_util._down
+    finally:
+        http_util._down.clear()
+
+
+def test_dart_doc_worst_wait_not_above_before():
+    """DART 장애 때 원문 1건 최악 대기(접속 4번×연결 10초 + 백오프·지터) ≤ 변경 전 78초."""
+    retry = http_util.domestic_retry()
+    connect, _ = http_util.timeouts("dart-doc", 90)
+    backoff = sum(min(retry.backoff_max, retry.backoff_factor * 2 ** (n - 1)) if n > 1 else 0 for n in range(1, retry.connect + 1))
+    worst = (retry.connect + 1) * connect + backoff + retry.backoff_jitter * retry.connect
+    assert worst <= 78
