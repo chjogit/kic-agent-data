@@ -237,34 +237,79 @@ def annual_reports(conn, company_id: int, limit: int = 3) -> list[tuple]:
 _RETENTION_DAY = "coalesce(d.published_at, d.created_at::date)"
 
 
-def retention_count(conn, sources: list[str], cutoff) -> int:
-    """보관 기한이 지난 문서 수 (cutoff 보다 이전에 발행된 것)."""
+def opinion_configured() -> bool:
+    """kic-opinion 접속 정보가 있으면 True (블로그·카페는 그쪽에 있음)."""
+    return bool(env(OPINION_URL_ENV))
+
+
+def retention_counts(conn, sources: list[str], cutoff) -> dict[str, tuple[int, int, int]]:
+    """보관 기한이 지난(cutoff 보다 이전 발행) 문서 → {source: (문서 수, 청크 수, 감성 행 수)}. 읽기만 합니다."""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT count(*) FROM rag.document d WHERE d.source = ANY(%s) AND {_RETENTION_DAY} < %s", [sources, cutoff])
-        return int(cur.fetchone()[0])
+        cur.execute("SELECT to_regclass('rag.chunk') IS NOT NULL")
+        has_chunk = bool(cur.fetchone()[0])
+        chunks = "(SELECT count(*) FROM rag.chunk c WHERE c.doc_id = d.doc_id)" if has_chunk else "0"
+        cur.execute(
+            f"SELECT d.source, count(*), coalesce(sum({chunks}), 0), count(s.doc_id) FROM rag.document d "
+            "LEFT JOIN core.doc_sentiment s USING (doc_id) "
+            f"WHERE d.source = ANY(%s) AND {_RETENTION_DAY} < %s GROUP BY d.source", [sources, cutoff])
+        found = {r[0]: (int(r[1]), int(r[2]), int(r[3])) for r in cur.fetchall()}
+    return {s: found.get(s, (0, 0, 0)) for s in sources}
+
+
+def retention_row_bytes(conn) -> dict[str, float]:
+    """표별 평균 행 크기(본체·인덱스·TOAST 포함 전체 크기 ÷ 행 수) → {"doc", "chunk", "sentiment"}. 표가 없으면 0."""
+    out = {}
+    with conn.cursor() as cur:
+        for key, table in (("doc", "rag.document"), ("chunk", "rag.chunk"), ("sentiment", "core.doc_sentiment")):
+            cur.execute("SELECT to_regclass(%s)", [table])
+            if cur.fetchone()[0] is None:
+                out[key] = 0.0
+                continue
+            cur.execute(f"SELECT pg_total_relation_size('{table}'), (SELECT count(*) FROM {table})")
+            size, n = cur.fetchone()
+            out[key] = float(size) / n if n else 0.0
+    return out
 
 
 def retention_batch(conn, sources: list[str], cutoff, limit: int) -> list[tuple]:
-    """지울 문서 한 배치 → [(doc_id, company_id, source, day, score)]. 종목이 없는 문서(company_id NULL)는 집계할 수 없어 건너뜀."""
+    """지울 문서 한 배치 → [(doc_id, company_id, source, published_at, score)]. 종목·발행일이 없는 문서도 지울 대상
+    (집계는 retention.aggregate 가 걸러냄)."""
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT d.doc_id, d.company_id, d.source, {_RETENTION_DAY}, s.score FROM rag.document d "
+            "SELECT d.doc_id, d.company_id, d.source, d.published_at, s.score FROM rag.document d "
             "LEFT JOIN core.doc_sentiment s USING (doc_id) "
-            f"WHERE d.source = ANY(%s) AND {_RETENTION_DAY} < %s AND d.company_id IS NOT NULL "
+            f"WHERE d.source = ANY(%s) AND {_RETENTION_DAY} < %s "
             "ORDER BY d.doc_id LIMIT %s", [sources, cutoff, limit])
         return cur.fetchall()
 
 
-def retention_apply(conn, agg: dict, doc_ids: list[int]) -> None:
-    """일별 집계에 더하고 같은 트랜잭션에서 문서를 지움 (core.doc_sentiment 는 ON DELETE CASCADE)."""
+def vacuum_analyze(conn, tables) -> None:
+    """지운 공간을 재사용할 수 있게 일반 VACUUM (ANALYZE). 트랜잭션 밖에서만 되므로 잠시 autocommit 으로 실행.
+    VACUUM FULL 은 하지 않습니다 (긴 잠금)."""
+    conn.commit()
+    old = conn.autocommit
+    conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO core.doc_daily_agg (company_id, source, d, n_docs, n_scored, score_sum) "
-                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (company_id, source, d) DO UPDATE SET "
-                "n_docs = core.doc_daily_agg.n_docs + EXCLUDED.n_docs, n_scored = core.doc_daily_agg.n_scored + EXCLUDED.n_scored, "
-                "score_sum = core.doc_daily_agg.score_sum + EXCLUDED.score_sum, updated_at = now()",
-                [(c, s, d, n, ns, sm) for (c, s, d), (n, ns, sm) in agg.items()])
+            for t in tables:
+                cur.execute("SELECT to_regclass(%s)", [t])
+                if cur.fetchone()[0] is not None:
+                    cur.execute(f"VACUUM (ANALYZE) {t}")
+    finally:
+        conn.autocommit = old
+
+
+def retention_apply(conn, agg: dict, doc_ids: list[int]) -> None:
+    """일별 집계에 더하고 같은 트랜잭션에서 문서를 지움 (core.doc_sentiment·rag.chunk 는 ON DELETE CASCADE)."""
+    try:
+        with conn.cursor() as cur:
+            if agg:
+                cur.executemany(
+                    "INSERT INTO core.doc_daily_agg (company_id, source, d, n_docs, n_scored, score_sum) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (company_id, source, d) DO UPDATE SET "
+                    "n_docs = core.doc_daily_agg.n_docs + EXCLUDED.n_docs, n_scored = core.doc_daily_agg.n_scored + EXCLUDED.n_scored, "
+                    "score_sum = core.doc_daily_agg.score_sum + EXCLUDED.score_sum, updated_at = now()",
+                    [(c, s, d, n, ns, sm) for (c, s, d), (n, ns, sm) in agg.items()])
             cur.execute("DELETE FROM rag.document WHERE doc_id = ANY(%s)", [doc_ids])
         conn.commit()
     except Exception:
