@@ -5,6 +5,7 @@
   apply-schema     sql/*.sql 적용
   check-sources    각 API 키가 동작하는지 1회씩 호출해 확인
   purge-opinion-docs  블로그·카페 문서 보관 기한 정리 (--dry-run 으로 건수 확인)
+  purge-news-docs     메인 뉴스·유튜브 댓글 보관 기한 정리 (--dry-run 으로 건수 확인)
   alert-sync       품질 알림(용량·늦은 데이터·수집 멈춤·API 오류)을 GitHub Issue 로 동기화
   archive-dart     DART A·B 공시 원문을 Object Storage 에 보관 (--dry-run 으로 건수·용량 확인)
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
@@ -818,18 +819,57 @@ def cmd_probe_dart_doc(args) -> int:
     return 0
 
 
-def cmd_purge_opinion(args) -> int:
-    """블로그·카페 문서 보관 기한 정리: 기한을 넘긴 행을 일별 집계로 남기고 지움 (--dry-run 은 건수·회수 예상만)."""
+def _print_purge(label: str, r: dict, dry_run: bool) -> None:
+    mb = 1024 * 1024
+    _ok("대상", f"{label}: 발행일 {r['cutoff']} 이전(보관 {r['days']}일 초과) {r['targets']}건, "
+                f"재사용 가능 공간 약 {r['est_bytes'] / mb:.1f}MB (청크·감성·인덱스 포함 추정)")
+    for src, v in r["by_source"].items():
+        _ok("  소스", f"{src}: 문서 {v['docs']} · 청크 {v['chunks']} · 감성 {v['sentiments']} · 약 {v['est_bytes'] / mb:.1f}MB")
+    if dry_run:
+        _ok("dry-run", "읽기 전용 연결, 쓰기 없음")
+    else:
+        _ok("삭제", f"{r['deleted']}건 (집계 {r['agg_rows']}행 갱신{', VACUUM ANALYZE' if r['vacuumed'] else ''})")
+
+
+def _purge(conn, sources, args) -> dict:
     from . import retention
 
-    with db.connect() as conn, db.opinion(conn) as oconn:
-        r = retention.purge(oconn, pulse.kst_now().date(), args.days, args.dry_run)
-    mb = 1024 * 1024
-    _ok("대상", f"발행일 {r['cutoff']} 이전(보관 {r['days']}일 초과) 블로그·카페 {r['targets']}건, 재사용 가능 공간 약 {r['est_bytes'] / mb:.1f}MB")
-    if args.dry_run:
-        _ok("dry-run", "쓰기 없음")
-    else:
-        _ok("삭제", f"{r['deleted']}건 (집계 {r['agg_rows']}행 갱신)")
+    return retention.purge(conn, pulse.kst_now().date(), args.days, args.dry_run, sources=sources,
+                           vacuum=getattr(args, "vacuum", False))
+
+
+def cmd_purge_opinion(args) -> int:
+    """블로그·카페 문서 보관 기한 정리(kic-opinion, 분리 전에는 메인): 기한을 넘긴 행을 일별 집계로 남기고 지움.
+    --dry-run 은 읽기 전용 연결로 건수·회수 예상만."""
+    from . import retention
+
+    with db.connect() as conn:
+        if args.dry_run:
+            conn.read_only = True
+            oconn = db.connect_opinion(read_only=True) or conn
+            try:
+                r = _purge(oconn, retention.OPINION_SOURCES, args)
+            finally:
+                if oconn is not conn:
+                    oconn.close()
+        else:
+            with db.opinion(conn) as oconn:
+                r = _purge(oconn, retention.OPINION_SOURCES, args)
+    _print_purge("블로그·카페" + (" (kic-opinion)" if db.opinion_configured() else ""), r, args.dry_run)
+    return 0
+
+
+def cmd_purge_news(args) -> int:
+    """메인 뉴스·유튜브 댓글 보관 기한 정리: 일별 집계(문서 수·감성)를 남기고 문서·감성·청크를 지움.
+    kic-opinion 으로 옮긴 뒤 메인에 남은 블로그·카페도 함께 정리. naver_news_backfill·dart_report 는 지우지 않음."""
+    from . import retention
+
+    sources = retention.NEWS_SOURCES + (retention.OPINION_SOURCES if db.opinion_configured() else ())
+    with db.connect() as conn:
+        if args.dry_run:
+            conn.read_only = True
+        r = _purge(conn, sources, args)
+    _print_purge("메인 뉴스·댓글", r, args.dry_run)
     return 0
 
 
@@ -1773,9 +1813,14 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
-    a = sub.add_parser("purge-opinion-docs", help="블로그·카페 문서 보관 기한 정리 (일별 집계를 남기고 삭제)")
-    a.add_argument("--days", type=int, default=None, help="보관 일수 (기본 30, 환경변수 RETENTION_DAYS)")
-    a.add_argument("--dry-run", action="store_true", help="지울 건수·회수 예상만 출력"); a.set_defaults(fn=cmd_purge_opinion)
+    for name, help_, fn in (("purge-opinion-docs", "블로그·카페 문서 보관 기한 정리 (일별 집계를 남기고 삭제)", cmd_purge_opinion),
+                            ("purge-news-docs", "메인 뉴스·유튜브 댓글 보관 기한 정리 (일별 집계를 남기고 문서·감성·청크 삭제)",
+                             cmd_purge_news)):
+        a = sub.add_parser(name, help=help_)
+        a.add_argument("--days", type=int, default=None, help="보관 일수 (기본 14, 환경변수 RETENTION_DAYS)")
+        a.add_argument("--dry-run", action="store_true", help="읽기 전용으로 지울 건수·회수 예상만 출력")
+        a.add_argument("--vacuum", action="store_true", help="지운 뒤 일반 VACUUM (ANALYZE) (FULL 아님)")
+        a.set_defaults(fn=fn)
     a = sub.add_parser("archive-dart", help="DART A·B 공시 원문을 Object Storage 에 보관 (멱등, 누적 4GB 상한)")
     a.add_argument("--since", default=None, help="접수일 YYYY-MM-DD 이후만"); a.add_argument("--limit", type=int, default=None, help="올릴 공시 건수 상한")
     a.add_argument("--cap-gb", type=float, default=None, help="누적 상한 GB (기본 4, 환경변수 DART_ARCHIVE_CAP_GB)")
