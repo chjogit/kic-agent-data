@@ -167,3 +167,81 @@ def test_fetch_document_still_returns_parsed_files(monkeypatch):
 
     monkeypatch.setattr(dart_doc, "fetch_document_raw", lambda s, rc: _zip_bytes())
     assert any("본문" in t for t in dart_doc.fetch_document(None, "20261030000001").values())
+
+
+class FakeClock:
+    """run() 의 clock 대신 쓰는 가짜 시계: 부를 때마다 step 초씩 흐름."""
+
+    def __init__(self, step):
+        self.t, self.step = 0.0, step
+
+    def __call__(self):
+        now = self.t
+        self.t += self.step
+        return now
+
+
+def test_time_budget_stops_and_leaves_rest_for_next_run(monkeypatch):
+    fake = FakeDB(_rows(10))
+    fake.install(monkeypatch)
+    store = FakeStore()
+    r = dart_archive.run(None, None, store, fetch_raw=_raw, max_seconds=3.5, clock=FakeClock(1.0))
+    assert 0 < r["uploaded"] < 10 and r["skipped_time"] == 10 - r["uploaded"] and r["skipped_cap"] == 0
+    assert set(fake.saved) == {c[0] for c in fake.cands[: r["uploaded"]]}      # 최근 공시부터
+    again = dart_archive.run(None, None, store, fetch_raw=_raw)                  # 다음 실행이 나머지를 이어 올림
+    assert again["targets"] == 10 - r["uploaded"] and again["uploaded"] == again["targets"] and len(fake.saved) == 10
+
+
+def test_no_time_budget_uploads_everything(monkeypatch):
+    FakeDB(_rows(5)).install(monkeypatch)
+    r = dart_archive.run(None, None, FakeStore(), fetch_raw=_raw, clock=FakeClock(10_000.0))
+    assert r["uploaded"] == 5 and r["skipped_time"] == 0
+
+
+def test_progress_every_n_with_counts(monkeypatch):
+    fake = FakeDB(_rows(7))
+    fake.install(monkeypatch)
+    bad = fake.cands[0][0]
+
+    def fetch(s, rc):
+        if rc == bad:
+            raise RuntimeError("원문 없음")
+        return b"x" * 100
+    seen = []
+    r = dart_archive.run(None, None, FakeStore(), fetch_raw=fetch, every=3,
+                         progress=lambda done, res: seen.append((done, res["uploaded"], res["uploaded_bytes"], len(res["failed"]))))
+    assert seen == [(3, 2, 200, 1), (6, 5, 500, 1)] and r["uploaded"] == 6
+
+
+def test_estimate_uses_measured_average_per_category_else_default(monkeypatch):
+    fake = FakeDB(_rows(2, "A") + _rows(3, "B"))
+    fake.install(monkeypatch)
+    monkeypatch.setattr(db, "archive_avg_bytes", lambda conn: {"A": 0.5 * MB})   # B 는 기록 없음 → 기존 추정
+    r = dart_archive.run(None, None, None, dry_run=True, fetch_raw=_raw)
+    assert r["estimate_bytes"] == int(2 * 0.5 * MB + 3 * 300 * 1024)
+    assert r["avg"] == {"A": (0.5 * MB, "실측"), "B": (300 * 1024.0, "추정")}
+
+
+def test_cli_prints_progress_basis_and_summary(monkeypatch, capsys):
+    from argparse import Namespace
+
+    from kic_data import cli
+
+    fake = FakeDB(_rows(30))
+    fake.install(monkeypatch)
+
+    class Conn:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(db, "connect", lambda: Conn())
+    monkeypatch.setattr(storage, "get_store", lambda: FakeStore())
+    monkeypatch.setattr(cli, "make_session", lambda: None)
+    real_run = dart_archive.run
+    monkeypatch.setattr(dart_archive, "run", lambda *a, **k: real_run(*a, fetch_raw=_raw, **k))
+    rc = cli.cmd_archive_dart(Namespace(since=None, limit=None, cap_gb=None, dry_run=False, max_minutes=330))
+    out = capsys.readouterr().out
+    assert rc == 0 and "[진행] 25/30건 처리: 올림 25건" in out and "실패 0건" in out
+    assert "A 8.00MB(추정)" in out and "B 0.29MB(추정)" in out and "[OK]   보관 30건" in out and "시간 예산" not in out

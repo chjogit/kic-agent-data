@@ -3,9 +3,13 @@
 - 대상: 이미 수집된 core.disclosure 중 국내 종목의 category A·B. 최근 접수일부터 올립니다.
 - 멱등: ops.dart_archive 에 접수번호가 있으면 다시 올리지 않습니다 (저장소에 파일만 있고 메타가 없으면 메타만 채움).
 - 용량: 올리기 전에 대상 건수·예상 용량을 내고, 누적 크기가 상한(기본 4GB)에 닿으면 멈추고 못 올린 건수를 기록합니다.
+- 시간 예산: max_seconds 를 넘기면 다음 파일을 받지 않고 멈춥니다 (남은 건수 기록, 다음 실행이 이어 올림).
+- 진행: progress 콜백으로 every 건마다 진행 상황을 넘깁니다 (끊겨도 그때까지의 진행 줄이 로그에 남도록).
 - 재사용: fetch_files() 는 보관본이 있으면 DART 를 다시 부르지 않고 원문을 돌려줍니다 (report-exposure 파서 등).
 """
 from __future__ import annotations
+
+import time
 
 from . import db
 from .config import env
@@ -29,15 +33,27 @@ def cap_bytes(cap_gb: float | None = None) -> int:
     return int(gb * 1024 ** 3)
 
 
+PROGRESS_EVERY = 25
+
+
 def estimate(candidates: list[tuple], avg: dict[str, float] | None = None) -> int:
     avg = {**DEFAULT_AVG, **(avg or {})}
     return int(sum(avg.get(c[3], avg["B"]) for c in candidates))
 
 
+def avg_basis(measured: dict[str, float] | None) -> dict[str, tuple[float, str]]:
+    """유형별 (예상 평균 바이트, 근거) — 보관 기록이 있으면 '실측', 없으면 '추정'(DEFAULT_AVG)."""
+    measured = measured or {}
+    return {c: (measured[c], "실측") if c in measured else (float(DEFAULT_AVG[c]), "추정") for c in CATEGORIES}
+
+
 def run(conn, session, store, since: str | None = None, limit: int | None = None, cap_gb: float | None = None,
-        dry_run: bool = False, fetch_raw=None) -> dict:
-    """보관 실행. 결과 dict 의 키: targets, estimate_bytes, used_bytes, cap_bytes, uploaded, uploaded_bytes,
-    skipped_cap(상한으로 못 올린 건수), failed[(접수번호, 이유)], skipped(저장소 설정 없음 등 사유 또는 None)."""
+        dry_run: bool = False, fetch_raw=None, max_seconds: float | None = None, progress=None,
+        every: int = PROGRESS_EVERY, clock=time.monotonic) -> dict:
+    """보관 실행. 결과 dict 의 키: targets, estimate_bytes, avg(유형별 (평균 바이트, 근거)), used_bytes, cap_bytes,
+    uploaded, uploaded_bytes, skipped_cap(상한으로 못 올린 건수), skipped_time(시간 예산으로 다음 실행에 넘긴 건수),
+    failed[(접수번호, 이유)], skipped(저장소 설정 없음 등 사유 또는 None).
+    progress(done, res) 는 every 건마다 불립니다 (done = 처리한 대상 수)."""
     if fetch_raw is None:
         from .collectors import dart_doc
 
@@ -45,16 +61,24 @@ def run(conn, session, store, since: str | None = None, limit: int | None = None
     cands = db.archive_candidates(conn, list(CATEGORIES), since, limit)
     used = db.archive_used_bytes(conn)
     cap = cap_bytes(cap_gb)
-    res = {"targets": len(cands), "estimate_bytes": estimate(cands, db.archive_avg_bytes(conn)), "used_bytes": used,
-           "cap_bytes": cap, "uploaded": 0, "uploaded_bytes": 0, "skipped_cap": 0, "failed": [], "skipped": None}
+    measured = db.archive_avg_bytes(conn)
+    res = {"targets": len(cands), "estimate_bytes": estimate(cands, measured), "avg": avg_basis(measured),
+           "used_bytes": used, "cap_bytes": cap, "uploaded": 0, "uploaded_bytes": 0, "skipped_cap": 0,
+           "skipped_time": 0, "failed": [], "skipped": None}
     if dry_run:
         return res
     if store is None:
         res["skipped"] = "Object Storage 접근 정보 없음 (건너뜀)"
         return res
+    start = clock()
     for i, (rcept_no, company_id, ticker, category, rcept_dt) in enumerate(cands):
+        if progress and i and i % every == 0:
+            progress(i, res)
         if used + MAX_SINGLE > cap:
             res["skipped_cap"] = len(cands) - i  # 최근순이라 남은 것은 모두 더 오래된 공시
+            break
+        if max_seconds is not None and clock() - start >= max_seconds:
+            res["skipped_time"] = len(cands) - i  # 멱등이라 다음 실행이 여기서부터 이어 올림
             break
         key = object_key(rcept_no, category)
         try:

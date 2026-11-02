@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import time
 from datetime import date, timedelta
 
 from . import db, features, krx_sector, pulse, quarterly, rag, sentiment, status
@@ -879,12 +880,21 @@ def cmd_archive_dart(args) -> int:
     """DART A·B 공시 원문을 Object Storage 에 보관 (접수번호 기준 멱등, 누적 상한 기본 4GB)."""
     from . import dart_archive, storage
 
-    store = None if args.dry_run else storage.get_store()
-    with db.connect() as conn:
-        r = dart_archive.run(conn, make_session(), store, args.since, args.limit, args.cap_gb, args.dry_run)
     mb = 1024 * 1024
+    started = time.monotonic()
+
+    def progress(done: int, r: dict) -> None:  # flush: 취소·시간 초과로 끊겨도 여기까지는 로그에 남음
+        print(f"[진행] {done}/{r['targets']}건 처리: 올림 {r['uploaded']}건 {r['uploaded_bytes'] / mb:.1f}MB, "
+              f"실패 {len(r['failed'])}건, 경과 {(time.monotonic() - started) / 60:.0f}분", flush=True)
+
+    store = None if args.dry_run else storage.get_store()
+    max_seconds = args.max_minutes * 60 if args.max_minutes else None
+    with db.connect() as conn:
+        r = dart_archive.run(conn, make_session(), store, args.since, args.limit, args.cap_gb, args.dry_run,
+                             max_seconds=max_seconds, progress=progress)
+    basis = ", ".join(f"{c} {avg / mb:.2f}MB({how})" for c, (avg, how) in r["avg"].items())
     _ok("대상", f"A·B 공시 {r['targets']}건, 예상 +{r['estimate_bytes'] / mb:.0f}MB "
-                f"(보관 {r['used_bytes'] / mb:.0f}MB, 상한 {r['cap_bytes'] / mb:.0f}MB)")
+                f"(보관 {r['used_bytes'] / mb:.0f}MB, 상한 {r['cap_bytes'] / mb:.0f}MB; 건당 평균 {basis})")
     if args.dry_run:
         _ok("dry-run", "쓰기 없음")
         return 0
@@ -894,9 +904,12 @@ def cmd_archive_dart(args) -> int:
         return 1
     if r["skipped_cap"]:
         _fail("상한", f"누적 상한에 닿아 못 올린 공시 {r['skipped_cap']}건 (더 오래된 것)")
+    if r["skipped_time"]:
+        _ok("시간 예산", f"{args.max_minutes}분이 지나 멈춤: 남은 {r['skipped_time']}건은 다시 실행하면 이어 올림")
     for rcept_no, why in r["failed"]:
         _fail(rcept_no, why)
-    _ok("보관", f"{r['uploaded']}건 {r['uploaded_bytes'] / mb:.0f}MB (실패 {len(r['failed'])}건)")
+    _ok("보관", f"{r['uploaded']}건 {r['uploaded_bytes'] / mb:.1f}MB (실패 {len(r['failed'])}건, "
+                f"누적 {(r['used_bytes'] + r['uploaded_bytes']) / mb:.0f}MB, 경과 {(time.monotonic() - started) / 60:.0f}분)")
     return 1 if r["failed"] else 0
 
 
@@ -1826,6 +1839,7 @@ def main(argv=None) -> int:
     a = sub.add_parser("archive-dart", help="DART A·B 공시 원문을 Object Storage 에 보관 (멱등, 누적 4GB 상한)")
     a.add_argument("--since", default=None, help="접수일 YYYY-MM-DD 이후만"); a.add_argument("--limit", type=int, default=None, help="올릴 공시 건수 상한")
     a.add_argument("--cap-gb", type=float, default=None, help="누적 상한 GB (기본 4, 환경변수 DART_ARCHIVE_CAP_GB)")
+    a.add_argument("--max-minutes", type=float, default=None, help="시간 예산(분): 넘기면 멈추고 남은 건수 출력 (다음 실행이 이어 올림)")
     a.add_argument("--dry-run", action="store_true", help="대상 건수·예상 용량만 출력"); a.set_defaults(fn=cmd_archive_dart)
     a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율·이자율 민감도·외화 자산부채·수출 비중·외환 파생·가격변동 발췌")
     a.add_argument("--force", action="store_true", help="이미 읽은 원문도 다시")
