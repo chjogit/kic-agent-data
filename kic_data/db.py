@@ -283,18 +283,25 @@ def retention_batch(conn, sources: list[str], cutoff, limit: int) -> list[tuple]
         return cur.fetchall()
 
 
+VACUUM_TIMEOUT = "15min"   # VACUUM 하는 동안만 적용 (DB 기본 statement_timeout 20초에는 큰 표가 걸림)
+
+
 def vacuum_analyze(conn, tables) -> None:
     """지운 공간을 재사용할 수 있게 일반 VACUUM (ANALYZE). 트랜잭션 밖에서만 되므로 잠시 autocommit 으로 실행.
-    VACUUM FULL 은 하지 않습니다 (긴 잠금)."""
+    이 세션의 statement_timeout 은 VACUUM 동안만 늘리고 끝나면 되돌립니다. VACUUM FULL 은 하지 않습니다 (긴 잠금)."""
     conn.commit()
     old = conn.autocommit
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            for t in tables:
-                cur.execute("SELECT to_regclass(%s)", [t])
-                if cur.fetchone()[0] is not None:
-                    cur.execute(f"VACUUM (ANALYZE) {t}")
+            cur.execute(f"SET statement_timeout = '{VACUUM_TIMEOUT}'")
+            try:
+                for t in tables:
+                    cur.execute("SELECT to_regclass(%s)", [t])
+                    if cur.fetchone()[0] is not None:
+                        cur.execute(f"VACUUM (ANALYZE) {t}")
+            finally:
+                cur.execute("RESET statement_timeout")
     finally:
         conn.autocommit = old
 

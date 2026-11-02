@@ -74,7 +74,7 @@ def purge(conn, today: date, days: int | None = None, dry_run: bool = False, bat
     res = {"days": days, "cutoff": cutoff.isoformat(), "sources": sources, "by_source": by_source,
            "targets": sum(v["docs"] for v in by_source.values()),
            "est_bytes": sum(v["est_bytes"] for v in by_source.values()),
-           "deleted": 0, "agg_rows": 0, "vacuumed": False}
+           "deleted": 0, "agg_rows": 0, "vacuumed": False, "vacuum_error": None}
     if dry_run or not res["targets"]:
         return res
     while True:
@@ -86,6 +86,9 @@ def purge(conn, today: date, days: int | None = None, dry_run: bool = False, bat
         res["deleted"] += len(rows)
         res["agg_rows"] += len(agg)
     if vacuum and res["deleted"]:
-        db.vacuum_analyze(conn, VACUUM_TABLES)
-        res["vacuumed"] = True
+        try:
+            db.vacuum_analyze(conn, VACUUM_TABLES)
+            res["vacuumed"] = True
+        except Exception as exc:  # noqa: BLE001  삭제는 이미 커밋됨 → VACUUM 실패는 경고로만 (작업을 실패로 만들지 않음)
+            res["vacuum_error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
     return res

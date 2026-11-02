@@ -829,6 +829,8 @@ def _print_purge(label: str, r: dict, dry_run: bool) -> None:
         _ok("dry-run", "읽기 전용 연결, 쓰기 없음")
     else:
         _ok("삭제", f"{r['deleted']}건 (집계 {r['agg_rows']}행 갱신{', VACUUM ANALYZE' if r['vacuumed'] else ''})")
+        if r.get("vacuum_error"):
+            _ok("경고", f"VACUUM 실패: {r['vacuum_error']} (삭제는 완료됨, 다음 실행에서 다시 시도)")
 
 
 def _purge(conn, sources, args) -> dict:
