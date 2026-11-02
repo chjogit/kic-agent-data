@@ -160,7 +160,7 @@ def list_runs(request: Request, job: str | None = None, limit: int = 50):
 def data_status(request: Request):
     _require_viewer(request)
     with _connect() as conn:
-        return _ok(status.collect(conn))
+        return _ok(status.collect_all(conn))
 
 
 @app.get("/api/features")
@@ -237,7 +237,11 @@ def quality_health(request: Request):
 def quality_data(request: Request):
     """DB 의 현재 데이터 상태 (종목 마스터, 데이터 종류별 건수·최신 값·커버리지·최신성, 지수·거시·문서·공시)."""
     _require_viewer(request)
-    return _ok(_quality_db(quality.data_status))
+
+    def run(conn):
+        with status.opinion_reader() as (oc, configured):   # 블로그·카페는 kic-opinion(설정 시)
+            return quality.data_status(conn, opinion_conn=oc, opinion_configured=configured)
+    return _ok(_quality_db(run))
 
 
 @app.get("/api/quality/api/{name}")
@@ -297,7 +301,7 @@ def dashboard(request: Request):
                 # API 키는 Vercel 이 아니라 GitHub Actions Secrets 에 있으므로 '키 없음' 판단은 실제 실행 기록(건너뜀)에 맡김
                 ov = jobs.overview(state, getenv=lambda k: "set")
                 runs = state.recent_runs(40)
-                st = status.collect(conn)
+                st = status.collect_all(conn)
             job_html = _jobs_table(ov)
             runs_html = _runs_table(runs)
             summary_html = _summary_block(st)

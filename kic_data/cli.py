@@ -4,6 +4,7 @@
   check-db         DB 연결·pgvector 확인
   apply-schema     sql/*.sql 적용
   check-sources    각 API 키가 동작하는지 1회씩 호출해 확인
+  purge-opinion-docs  블로그·카페 문서 보관 기한 정리 (--dry-run 으로 건수 확인)
   alert-sync       품질 알림(용량·늦은 데이터·수집 멈춤·API 오류)을 GitHub Issue 로 동기화
   archive-dart     DART A·B 공시 원문을 Object Storage 에 보관 (--dry-run 으로 건수·용량 확인)
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
@@ -118,6 +119,13 @@ def cmd_apply_schema(args) -> int:
     with db.connect() as conn:
         for name in db.apply_schema(conn, lock_timeout=SCHEMA_LOCK_TIMEOUT, busy=busy):
             _ok("적용", name)
+        oc = db.connect_opinion()   # kic-opinion 이 설정돼 있으면 그쪽 스키마·시퀀스도 맞춤 (메인은 최대값만 읽음)
+        if oc is not None:
+            with oc:
+                for name in db.apply_opinion_schema(oc):
+                    _ok("적용", name)
+                for key, val in db.sync_opinion_sequences(conn, oc).items():
+                    _ok("시퀀스", f"kic-opinion {key} → {val}")
     for name in busy:
         _fail(name, f"다른 연결이 테이블을 쓰고 있어 잠금을 {SCHEMA_LOCK_TIMEOUT} 안에 못 잡음 → 건너뜀 (다음 실행에서 다시)")
     return 1 if busy else 0
@@ -335,8 +343,8 @@ def cmd_community(args) -> int:
     since = date.today() - timedelta(days=args.days)
     sources = [x.strip() for x in args.sources.split(",") if x.strip()]
     bad = 0
-    with db.connect() as conn:
-        have = ({src: db.companies_with_docs(conn, src) for src in sources}
+    with db.connect() as conn, db.opinion(conn) as oconn:   # 블로그·카페는 kic-opinion(설정 시), 없으면 메인
+        have = ({src: db.companies_with_docs(oconn, src) for src in sources}
                 if getattr(args, "only_missing", False) else {})
         for market in ("KR", "US"):
             for cid, ticker, name, *_ in db.list_companies(conn, market):
@@ -351,7 +359,7 @@ def cmd_community(args) -> int:
                         _fail(f"{market}:{ticker} {src}", str(exc))
                         bad += 1
                         continue
-                    n = db.upsert_documents(conn, cid, src, rows, keep_first=(src == "naver_cafe"))
+                    n = db.upsert_documents(oconn, cid, src, rows, keep_first=(src == "naver_cafe"))
                     parts.append(f"{src.split('_')[1]} {n}")
                 if parts:
                     _ok(f"{market}:{ticker}", ", ".join(parts) + f" (검색어 '{term} 주가/주식')")
@@ -359,23 +367,28 @@ def cmd_community(args) -> int:
 
 
 def cmd_sentiment(args) -> int:
-    """점수 없는 뉴스·블로그·카페글에 감성 점수를 매깁니다 (제목+요약)."""
+    """점수 없는 뉴스·블로그·카페글에 감성 점수를 매깁니다 (제목+요약). 블로그·카페는 kic-opinion(설정 시)에서 처리."""
     method = args.method or env("SENTIMENT_METHOD") or "lexicon"
-    with db.connect() as conn:
-        if getattr(args, "rescore", False):  # 사전을 고친 뒤 전체 다시 채점
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM core.doc_sentiment WHERE method = %s", [method])
-            conn.commit()
-        docs = db.docs_without_sentiment(conn, method, args.limit)
-        if not docs:
+    with db.connect() as conn, db.opinion(conn) as oconn:
+        main_src, op_src = db.split_sources(oconn, conn, db.SENTIMENT_SOURCES)
+        total = 0
+        for c, srcs in ((conn, main_src), (oconn, op_src)):
+            if not srcs:
+                continue
+            if getattr(args, "rescore", False):  # 사전을 고친 뒤 전체 다시 채점
+                with c.cursor() as cur:
+                    cur.execute("DELETE FROM core.doc_sentiment s USING rag.document d "
+                                "WHERE d.doc_id = s.doc_id AND s.method = %s AND d.source = ANY(%s)", [method, srcs])
+                c.commit()
+            docs = db.docs_without_sentiment(c, method, args.limit, srcs)
+            for i in range(0, len(docs), 500):
+                part = docs[i:i + 500]
+                scores = sentiment.score_texts([f"{t or ''} {sm or ''}" for _, t, sm in part], method)
+                total += db.upsert_sentiment(c, [(doc_id, sc, sentiment.label_of(sc), method)
+                                                 for (doc_id, _, _), sc in zip(part, scores)])
+        if not total:
             _ok("감성 점수", "새로 매길 문서 없음")
             return 0
-        total = 0
-        for i in range(0, len(docs), 500):
-            part = docs[i:i + 500]
-            scores = sentiment.score_texts([f"{t or ''} {sm or ''}" for _, t, sm in part], method)
-            total += db.upsert_sentiment(conn, [(doc_id, sc, sentiment.label_of(sc), method)
-                                                for (doc_id, _, _), sc in zip(part, scores)])
         _ok("감성 점수", f"{total}건 ({method})")
     return 0
 
@@ -390,13 +403,13 @@ def cmd_pulse(args) -> int:
     method = env("SENTIMENT_METHOD") or "lexicon"
     s = make_session()
     bad = 0
-    with db.connect() as conn:
+    with db.connect() as conn, db.opinion(conn) as oconn:
         for market in ("KR", "US"):
             for cid, ticker, name, *_ in db.list_companies(conn, market):
                 if wanted and ticker.upper() not in wanted:
                     continue
                 try:
-                    snap = pulse.refresh(conn, s, cid, market, ticker, name, method, args.max_age)
+                    snap = pulse.refresh(conn, s, cid, market, ticker, name, method, args.max_age, oconn)
                 except RuntimeError as exc:
                     _fail(f"{market}:{ticker}", str(exc))
                     bad += 1
@@ -802,6 +815,21 @@ def cmd_probe_dart_doc(args) -> int:
                     print(f"\n--- [{','.join(hits)}] {name} 표#{tb.index} 단위={tb.unit} 제목={tb.title!r}")
                     print("문맥:", tb.context[-220:])
                     print(tb.text(args.max_rows)[:args.max_chars])
+    return 0
+
+
+def cmd_purge_opinion(args) -> int:
+    """블로그·카페 문서 보관 기한 정리: 기한을 넘긴 행을 일별 집계로 남기고 지움 (--dry-run 은 건수·회수 예상만)."""
+    from . import retention
+
+    with db.connect() as conn, db.opinion(conn) as oconn:
+        r = retention.purge(oconn, pulse.kst_now().date(), args.days, args.dry_run)
+    mb = 1024 * 1024
+    _ok("대상", f"발행일 {r['cutoff']} 이전(보관 {r['days']}일 초과) 블로그·카페 {r['targets']}건, 재사용 가능 공간 약 {r['est_bytes'] / mb:.1f}MB")
+    if args.dry_run:
+        _ok("dry-run", "쓰기 없음")
+    else:
+        _ok("삭제", f"{r['deleted']}건 (집계 {r['agg_rows']}행 갱신)")
     return 0
 
 
@@ -1539,7 +1567,7 @@ def cmd_show_ttm(args) -> int:
 
 def cmd_build_features(args) -> int:
     today = date.today()
-    with db.connect() as conn:
+    with db.connect() as conn, db.opinion(conn) as oconn:
         macro = db.fetch_macro_all(conn)
         # 해외 20-F 기업(ASML·TSMC)은 재무 통화(EUR·TWD)를 USD 로 환산해 연간 PER/PBR 채움 (collect-macro 의 FRED 환율 필요)
         snaps = {k: features.fill_fx_valuation(v, macro) for k, v in db.fetch_snapshots(conn).items()}
@@ -1559,7 +1587,7 @@ def cmd_build_features(args) -> int:
             cid = snap["company_id"]
             attention = {
                 "search": trends.relative(db.fetch_search_trend(conn, f"{key[0]}:{key[1]}")),
-                "reactions": db.fetch_reactions(conn, cid, today - timedelta(days=40)),
+                "reactions": db.fetch_reactions_split(conn, oconn, cid, today - timedelta(days=40)),
                 "mentions": db.fetch_mention_daily(conn, cid),
                 "today": today,
             }
@@ -1745,6 +1773,9 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-company-info"); a.add_argument("--skip-kr-shares", action="store_true"); a.set_defaults(fn=cmd_company_info)
     sub.add_parser("sync-kospi200").set_defaults(fn=cmd_sync_kospi200)
     sub.add_parser("probe-bulk").set_defaults(fn=cmd_probe_bulk)
+    a = sub.add_parser("purge-opinion-docs", help="블로그·카페 문서 보관 기한 정리 (일별 집계를 남기고 삭제)")
+    a.add_argument("--days", type=int, default=None, help="보관 일수 (기본 30, 환경변수 RETENTION_DAYS)")
+    a.add_argument("--dry-run", action="store_true", help="지울 건수·회수 예상만 출력"); a.set_defaults(fn=cmd_purge_opinion)
     a = sub.add_parser("archive-dart", help="DART A·B 공시 원문을 Object Storage 에 보관 (멱등, 누적 4GB 상한)")
     a.add_argument("--since", default=None, help="접수일 YYYY-MM-DD 이후만"); a.add_argument("--limit", type=int, default=None, help="올릴 공시 건수 상한")
     a.add_argument("--cap-gb", type=float, default=None, help="누적 상한 GB (기본 4, 환경변수 DART_ARCHIVE_CAP_GB)")

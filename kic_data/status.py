@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import date, datetime
 
 from . import db
@@ -61,9 +62,38 @@ def _q(conn, sql: str, params=None) -> list[tuple] | None:
         return None
 
 
-def collect(conn, today: date | None = None) -> dict:
+@contextmanager
+def opinion_reader():
+    """(kic-opinion 읽기 전용 연결 또는 None, 설정 여부). 접속 정보가 있는데 못 붙으면 (None, True)."""
+    if not env(db.OPINION_URL_ENV):
+        yield None, False
+        return
+    try:
+        oc = db.connect_opinion(read_only=True)
+    except Exception:  # noqa: BLE001  kic-opinion 에 못 붙어도 메인 현황은 보여 줌
+        yield None, True
+        return
+    try:
+        yield oc, True
+    finally:
+        oc.close()
+
+
+def collect_all(conn, today: date | None = None) -> dict:
+    """collect + 블로그·카페는 kic-opinion(OPINION_DATABASE_URL 설정 시)에서 읽음."""
+    with opinion_reader() as (oc, configured):
+        return collect(conn, today, oc, configured)
+
+
+def collect(conn, today: date | None = None, opinion_conn=None, opinion_configured: bool | None = None) -> dict:
+    """opinion_conn 이 있으면 블로그·카페 건수·최신일·감성 점수·문서 현황을 kic-opinion 에서 읽습니다.
+    설정돼 있는데 연결이 없으면(접속 실패) 블로그·카페 값을 비워 둡니다 (메인의 옛 값으로 '오래됨' 오경보를 내지 않게)."""
     today = today or date.today()
     out: dict = {"checked_at": today.isoformat()}
+    split = opinion_conn is not None and opinion_conn is not conn
+    configured = split if opinion_configured is None else bool(opinion_configured)
+    out["opinion"] = {"configured": configured, "connected": split}
+    opin = ", ".join(f"'{s}'" for s in db.OPINION_SOURCES)
     size = _q(conn, "SELECT pg_database_size(current_database())")
     out["db"] = db_usage(int(size[0][0])) if size else None
 
@@ -74,8 +104,8 @@ def collect(conn, today: date | None = None) -> dict:
               "sector": bool(sec), "shares": sh is not None}
         for cid, m, t, n, cc, ck, sec, sh in companies}
 
-    def merge(sql: str, keys: tuple[str, ...]):
-        for r in _q(conn, sql) or []:
+    def merge(sql: str, keys: tuple[str, ...], c=conn):
+        for r in _q(c, sql) or []:
             if r[0] in per:
                 per[r[0]].update(dict(zip(keys, r[1:])))
 
@@ -91,10 +121,18 @@ def collect(conn, today: date | None = None) -> dict:
     merge("SELECT company_id, count(*), max(rcept_dt) FROM core.disclosure GROUP BY company_id",
           ("disclosures", "disclosure_last"))
     for src, label in (("naver_news", "news"), ("naver_blog", "blog"), ("naver_cafe", "cafe")):
+        c = conn
+        if configured and src in db.OPINION_SOURCES:
+            if not split:
+                continue
+            c = opinion_conn
         merge(f"SELECT company_id, count(*), max(published_at) FROM rag.document WHERE source = '{src}' GROUP BY company_id",
-              (f"{label}_docs", f"{label}_last"))
-    merge("SELECT d.company_id, count(*) FROM core.doc_sentiment s JOIN rag.document d USING (doc_id) GROUP BY d.company_id",
-          ("scored_docs",))
+              (f"{label}_docs", f"{label}_last"), c)
+    scored = "SELECT d.company_id, count(*) FROM core.doc_sentiment s JOIN rag.document d USING (doc_id)"
+    merge(scored + (f" WHERE d.source NOT IN ({opin})" if configured else "") + " GROUP BY d.company_id", ("scored_docs",))
+    for cid, n in (_q(opinion_conn, scored + " GROUP BY d.company_id") or []) if split else []:
+        if cid in per:
+            per[cid]["scored_docs"] = (per[cid].get("scored_docs") or 0) + n
     merge("SELECT company_id, count(DISTINCT trade_date), max(captured_at) FROM core.mention_count GROUP BY company_id",
           ("mention_days", "mention_last"))
     merge("SELECT company_id, count(*), max(captured_at) FROM core.reaction_pulse GROUP BY company_id",
@@ -115,10 +153,16 @@ def collect(conn, today: date | None = None) -> dict:
         conn, "SELECT s.series_id, s.name, s.source, s.frequency, count(o.obs_date), min(o.obs_date), max(o.obs_date) "
               "FROM core.macro_series s LEFT JOIN core.macro_obs o USING (series_id) "
               "GROUP BY s.series_id, s.name, s.source, s.frequency ORDER BY s.source, s.series_id") or []]
-    out["documents"] = [dict(zip(("source", "docs", "companies", "from", "to", "chunks"), r)) for r in _q(
+    doc_keys = ("source", "docs", "companies", "from", "to", "chunks")
+    out["documents"] = [dict(zip(doc_keys, r)) for r in _q(
         conn, "SELECT d.source, count(*), count(DISTINCT d.company_id), min(d.published_at), max(d.published_at), "
               "(SELECT count(*) FROM rag.chunk c JOIN rag.document x USING (doc_id) WHERE x.source = d.source) "
-              "FROM rag.document d GROUP BY d.source ORDER BY d.source") or []]
+              f"FROM rag.document d {f'WHERE d.source NOT IN ({opin}) ' if configured else ''}"
+              "GROUP BY d.source ORDER BY d.source") or []]
+    if split:   # kic-opinion 에는 청크 표가 없음 → 청크 '-'
+        out["documents"] = sorted(out["documents"] + [dict(zip(doc_keys, (*r, None))) for r in _q(
+            opinion_conn, "SELECT source, count(*), count(DISTINCT company_id), min(published_at), max(published_at) "
+                          "FROM rag.document GROUP BY source") or []], key=lambda d: d["source"])
     out["disclosures"] = [dict(zip(("source", "category", "rows", "unclassified", "from", "to"), r)) for r in _q(
         conn, "SELECT source, category, count(*), count(*) FILTER (WHERE event_type IS NULL), min(rcept_dt), max(rcept_dt) "
               "FROM core.disclosure GROUP BY source, category ORDER BY source, category") or []]
@@ -150,6 +194,10 @@ def render(st: dict) -> str:
             lines.append(f"  [경고] DB 가 경고 기준 {u['warn_mb']}MB 를 넘었습니다. 한도({u['limit_mb']}MB)에 닿으면 수집 쓰기가 실패합니다. "
                          f"(Neon 콘솔 수치는 이 값보다 약 {NEON_GAP_MB}MB 크게 보입니다)")
         lines.append("")
+    op = st.get("opinion") or {}
+    if op.get("configured"):
+        lines += ["[kic-opinion] 블로그·카페는 kic-opinion 에서 읽음" if op.get("connected")
+                  else "[kic-opinion] 접속 실패 — 블로그·카페 건수·최신성을 비워 둠", ""]
     cos = st["companies"]
     lines.append(f"[종목] {len(cos)}개  (DART 고유번호 {sum(c['corp_code'] for c in cos if c['market'] == 'KR')}"
                  f"/{sum(c['market'] == 'KR' for c in cos)}, CIK {sum(c['cik'] for c in cos if c['market'] == 'US')}"
@@ -188,7 +236,7 @@ def render(st: dict) -> str:
               f"{freshness(m['to'], today, FRESH_DAYS['macro_D' if m['frequency'] == 'D' else 'macro_M'])}"
               for m in st["macro"]] or ["  없음 (collect-macro)"]
     lines += ["", "[문서] 출처별 (청크 = RAG 임베딩 적재 수, 대상 4개 소스만)"]
-    lines += [f"  {d['source']:<12}{d['docs']:>7}건  종목 {d['companies']:>2}개  {_s(d['from'])}~{_s(d['to'])}  청크 {d['chunks']}"
+    lines += [f"  {d['source']:<12}{d['docs']:>7}건  종목 {d['companies']:>2}개  {_s(d['from'])}~{_s(d['to'])}  청크 {_s(d['chunks'])}"
               for d in st["documents"]] or ["  없음 (collect-news / collect-community)"]
     lines += ["", "[공시] 출처·유형별 (미분류 = event_type 키워드 미매칭)"]
     lines += [f"  {d['source']:<10}{(d['category'] or ''):<6}{d['rows']:>6}건  미분류 {d['unclassified']:>4}  {_s(d['from'])}~{_s(d['to'])}"
@@ -203,7 +251,7 @@ def render(st: dict) -> str:
 
 def run(json_path: str | None = None) -> int:
     with db.connect() as conn:
-        st = collect(conn)
+        st = collect_all(conn)
     print(render(st))
     if json_path:
         with open(json_path, "w", encoding="utf-8") as fh:

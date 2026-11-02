@@ -262,14 +262,15 @@ DATASETS = [
 ]
 
 
-def data_status(conn, today=None) -> dict:
-    """DB 의 현재 데이터 상태: 종목 마스터, 데이터 종류별 건수·최신 값·종목 커버리지·최신성, 지수·거시·문서·공시."""
+def data_status(conn, today=None, opinion_conn=None, opinion_configured: bool | None = None) -> dict:
+    """DB 의 현재 데이터 상태: 종목 마스터, 데이터 종류별 건수·최신 값·종목 커버리지·최신성, 지수·거시·문서·공시.
+    블로그·카페는 opinion_conn(kic-opinion)이 있으면 그쪽에서 읽습니다 (status.collect 참고)."""
     from zoneinfo import ZoneInfo
 
     from . import status
 
     today = today or datetime.now(ZoneInfo("Asia/Seoul")).date()
-    st = status.collect(conn, today)
+    st = status.collect(conn, today, opinion_conn, opinion_configured)
     cos = st["companies"]
     kr = [c for c in cos if c["market"] == "KR"]
     us = [c for c in cos if c["market"] == "US"]
