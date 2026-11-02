@@ -143,6 +143,10 @@ def fetch_document(session, rcept_no: str) -> dict[str, str]:
     return parse_zip(fetch_document_raw(session, rcept_no))
 
 
+class NoDocument(RuntimeError):
+    """DART 가 상태 014(파일이 존재하지 않음)로 답한 공시 — 다시 불러도 같으므로 영구 건너뜀 대상."""
+
+
 def fetch_document_raw(session, rcept_no: str) -> bytes:
     """원문 zip 바이트 그대로 (보관용). 접속 재시도는 세션의 국내 어댑터(접속 4번, 지수 백오프+지터)에만 맡깁니다.
     여기서 다시 감싸 재시도하면 곱해져 DART 장애 때 원문 1건이 3분 넘게 걸리므로 하지 않습니다.
@@ -154,5 +158,7 @@ def fetch_document_raw(session, rcept_no: str) -> bytes:
     if not content.startswith(b"PK"):  # 오류는 XML/JSON 으로 옴
         msg = decode(content[:300])
         status = re.search(r"<status>(\d+)</status>|\"status\"\s*:\s*\"(\d+)\"", msg)
-        raise RuntimeError(f"[dart] 원문 없음 {status.group(1) or status.group(2) if status else ''}".strip())
+        code = (status.group(1) or status.group(2)) if status else ""
+        err = NoDocument if code == "014" else RuntimeError
+        raise err(f"[dart] 원문 없음 {code}".strip())
     return content

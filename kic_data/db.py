@@ -329,7 +329,8 @@ def archive_candidates(conn, categories: list[str], since: str | None = None, li
     sql = ("SELECT d.rcept_no, d.company_id, co.ticker, d.category, d.rcept_dt FROM core.disclosure d "
            "JOIN core.company co ON co.company_id = d.company_id "
            "WHERE co.market = 'KR' AND d.category = ANY(%s) "
-           "AND NOT EXISTS (SELECT 1 FROM ops.dart_archive a WHERE a.rcept_no = d.rcept_no)")
+           "AND NOT EXISTS (SELECT 1 FROM ops.dart_archive a WHERE a.rcept_no = d.rcept_no) "
+           "AND NOT EXISTS (SELECT 1 FROM ops.dart_archive_skip s WHERE s.rcept_no = d.rcept_no)")
     params: list = [categories]
     if since:
         sql += " AND d.rcept_dt >= %s"
@@ -341,6 +342,14 @@ def archive_candidates(conn, categories: list[str], since: str | None = None, li
     with conn.cursor() as cur:
         cur.execute(sql, params)
         return cur.fetchall()
+
+
+def archive_mark_skip(conn, rcept_no: str, reason: str) -> None:
+    """원문이 없는 공시(DART 014)를 영구 건너뜀으로 기록 — 다음 실행의 대상에서 빠집니다."""
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO ops.dart_archive_skip (rcept_no, reason) VALUES (%s, %s) ON CONFLICT (rcept_no) DO NOTHING",
+                    [rcept_no, reason[:200]])
+    conn.commit()
 
 
 def archive_used_bytes(conn) -> int:

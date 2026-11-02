@@ -906,6 +906,8 @@ def cmd_archive_dart(args) -> int:
         _fail("상한", f"누적 상한에 닿아 못 올린 공시 {r['skipped_cap']}건 (더 오래된 것)")
     if r["skipped_time"]:
         _ok("시간 예산", f"{args.max_minutes}분이 지나 멈춤: 남은 {r['skipped_time']}건은 다시 실행하면 이어 올림")
+    if r["no_document"]:
+        _ok("원문 없음", f"원문 없음 건너뜀 {len(r['no_document'])}건 (DART 014, 다음 실행부터 다시 시도하지 않음)")
     for rcept_no, why in r["failed"]:
         _fail(rcept_no, why)
     _ok("보관", f"{r['uploaded']}건 {r['uploaded_bytes'] / mb:.1f}MB (실패 {len(r['failed'])}건, "

@@ -2,6 +2,7 @@
 
 - 대상: 이미 수집된 core.disclosure 중 국내 종목의 category A·B. 최근 접수일부터 올립니다.
 - 멱등: ops.dart_archive 에 접수번호가 있으면 다시 올리지 않습니다 (저장소에 파일만 있고 메타가 없으면 메타만 채움).
+- 원문 없음: DART 가 014(파일 없음)로 답한 공시는 ops.dart_archive_skip 에 기록해 다시 시도하지 않고 실패로 세지 않습니다.
 - 용량: 올리기 전에 대상 건수·예상 용량을 내고, 누적 크기가 상한(기본 4GB)에 닿으면 멈추고 못 올린 건수를 기록합니다.
 - 시간 예산: max_seconds 를 넘기면 다음 파일을 받지 않고 멈춥니다 (남은 건수 기록, 다음 실행이 이어 올림).
 - 진행: progress 콜백으로 every 건마다 진행 상황을 넘깁니다 (끊겨도 그때까지의 진행 줄이 로그에 남도록).
@@ -12,6 +13,7 @@ from __future__ import annotations
 import time
 
 from . import db
+from .collectors import dart_doc
 from .config import env
 
 CATEGORIES = ("A", "B")
@@ -52,11 +54,9 @@ def run(conn, session, store, since: str | None = None, limit: int | None = None
         every: int = PROGRESS_EVERY, clock=time.monotonic) -> dict:
     """보관 실행. 결과 dict 의 키: targets, estimate_bytes, avg(유형별 (평균 바이트, 근거)), used_bytes, cap_bytes,
     uploaded, uploaded_bytes, skipped_cap(상한으로 못 올린 건수), skipped_time(시간 예산으로 다음 실행에 넘긴 건수),
-    failed[(접수번호, 이유)], skipped(저장소 설정 없음 등 사유 또는 None).
+    no_document(원문 없음 014 로 영구 건너뜀한 접수번호), failed[(접수번호, 이유)], skipped(저장소 설정 없음 등 사유 또는 None).
     progress(done, res) 는 every 건마다 불립니다 (done = 처리한 대상 수)."""
     if fetch_raw is None:
-        from .collectors import dart_doc
-
         fetch_raw = dart_doc.fetch_document_raw
     cands = db.archive_candidates(conn, list(CATEGORIES), since, limit)
     used = db.archive_used_bytes(conn)
@@ -64,7 +64,7 @@ def run(conn, session, store, since: str | None = None, limit: int | None = None
     measured = db.archive_avg_bytes(conn)
     res = {"targets": len(cands), "estimate_bytes": estimate(cands, measured), "avg": avg_basis(measured),
            "used_bytes": used, "cap_bytes": cap, "uploaded": 0, "uploaded_bytes": 0, "skipped_cap": 0,
-           "skipped_time": 0, "failed": [], "skipped": None}
+           "skipped_time": 0, "no_document": [], "failed": [], "skipped": None}
     if dry_run:
         return res
     if store is None:
@@ -87,6 +87,10 @@ def run(conn, session, store, since: str | None = None, limit: int | None = None
                 data = fetch_raw(session, rcept_no)
                 store.put(key, data)
                 data_size = len(data)
+        except dart_doc.NoDocument as exc:  # 014: 영구 건너뜀으로 기록, 실패가 아님
+            db.archive_mark_skip(conn, rcept_no, str(exc))
+            res["no_document"].append(rcept_no)
+            continue
         except Exception as exc:  # noqa: BLE001  원문 없음·업로드 오류는 기록하고 다음 건으로
             res["failed"].append((rcept_no, f"{type(exc).__name__}: {exc}"[:160]))
             continue
@@ -112,8 +116,6 @@ def load_original(conn, store, rcept_no: str) -> bytes | None:
 
 def fetch_files(conn, store, session, rcept_no: str) -> dict[str, str]:
     """{파일명: 본문} — 보관본이 있으면 DART 를 부르지 않습니다."""
-    from .collectors import dart_doc
-
     raw = load_original(conn, store, rcept_no)
     if raw is not None:
         return dart_doc.parse_zip(raw)
