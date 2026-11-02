@@ -5,6 +5,7 @@ import zipfile
 import pytest
 
 from kic_data import dart_archive, db, storage
+from kic_data.collectors import dart_doc
 
 MB = 1024 * 1024
 
@@ -32,16 +33,18 @@ class FakeDB:
     def __init__(self, cands):
         self.cands = cands  # (rcept_no, company_id, ticker, category, rcept_dt) 최근순
         self.saved = {}
+        self.skipped = {}
 
     def install(self, monkeypatch):
         monkeypatch.setattr(db, "archive_candidates", self.candidates)
         monkeypatch.setattr(db, "archive_used_bytes", lambda conn: sum(v[4] for v in self.saved.values()))
         monkeypatch.setattr(db, "archive_avg_bytes", lambda conn: {})
         monkeypatch.setattr(db, "archive_save", self.save)
+        monkeypatch.setattr(db, "archive_mark_skip", lambda conn, rc, why: self.skipped.__setitem__(rc, why))
         monkeypatch.setattr(db, "archive_key", lambda conn, r: self.saved[r][3] if r in self.saved else None)
 
     def candidates(self, conn, categories, since=None, limit=None):
-        out = [c for c in self.cands if c[3] in categories and c[0] not in self.saved and (not since or str(c[4]) >= since)]
+        out = [c for c in self.cands if c[3] in categories and c[0] not in self.saved and c[0] not in self.skipped and (not since or str(c[4]) >= since)]
         return out[:limit] if limit else out
 
     def save(self, conn, rcept_no, company_id, ticker, category, key, size):
@@ -245,3 +248,59 @@ def test_cli_prints_progress_basis_and_summary(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and "[진행] 25/30건 처리: 올림 25건" in out and "실패 0건" in out
     assert "A 8.00MB(추정)" in out and "B 0.29MB(추정)" in out and "[OK]   보관 30건" in out and "시간 예산" not in out
+
+
+def _fetch_014_for(bad):
+    def fetch(s, rc):
+        if rc in bad:
+            raise dart_doc.NoDocument("[dart] 원문 없음 014")
+        return b"PK" + b"x" * 10
+    return fetch
+
+
+def test_014_is_skipped_permanently_not_failed_and_not_retried(monkeypatch):
+    fake = FakeDB(_rows(4))
+    fake.install(monkeypatch)
+    bad = {fake.cands[1][0], fake.cands[2][0]}
+    r = dart_archive.run(None, None, FakeStore(), fetch_raw=_fetch_014_for(bad))
+    assert r["uploaded"] == 2 and r["failed"] == [] and set(r["no_document"]) == bad
+    assert set(fake.skipped) == bad and not bad & set(fake.saved)
+    calls = []
+    r2 = dart_archive.run(None, None, FakeStore(), fetch_raw=lambda s, rc: calls.append(rc))  # 멱등: 다시 대상이 아님
+    assert r2["targets"] == 0 and calls == [] and r2["no_document"] == []
+
+
+def test_other_dart_errors_still_fail_and_are_not_skipped(monkeypatch):
+    fake = FakeDB(_rows(2))
+    fake.install(monkeypatch)
+
+    def fetch(s, rc):
+        raise RuntimeError("[dart] 원문 없음 013")
+    r = dart_archive.run(None, None, FakeStore(), fetch_raw=fetch)
+    assert len(r["failed"]) == 2 and r["no_document"] == [] and fake.skipped == {}
+
+
+def test_fetch_document_raw_raises_no_document_only_for_014(monkeypatch):
+    class Resp:
+        def __init__(self, body):
+            self.content = body
+
+    def run(body):
+        monkeypatch.setattr(dart_doc, "get", lambda *a, **k: Resp(body))
+        monkeypatch.setenv("DART_API_KEY", "x")
+        dart_doc.fetch_document_raw(None, "20261030000001")
+    with pytest.raises(dart_doc.NoDocument):
+        run(b"<result><status>014</status><message>x</message></result>")
+    with pytest.raises(RuntimeError) as e:
+        run(b"<result><status>020</status></result>")
+    assert not isinstance(e.value, dart_doc.NoDocument)
+
+
+def test_fetch_files_for_skipped_filing_falls_back_to_dart(monkeypatch):
+    FakeDB([]).install(monkeypatch)       # 보관 기록 없음 -> DART 직접 조회. 014 도 호출 쪽이 RuntimeError 로 다룸
+
+    def raw(session, rc):
+        raise dart_doc.NoDocument("[dart] 원문 없음 014")
+    monkeypatch.setattr(dart_doc, "fetch_document_raw", raw)
+    with pytest.raises(RuntimeError):
+        dart_archive.fetch_files(None, FakeStore(), None, "20261030000001")
