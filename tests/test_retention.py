@@ -177,3 +177,35 @@ def test_purge_news_includes_leftover_blog_only_when_opinion_split(monkeypatch):
     monkeypatch.setenv(db.OPINION_URL_ENV, "postgresql://x")
     cli.cmd_purge_news(args)
     assert seen == [retention.NEWS_SOURCES, retention.NEWS_SOURCES + retention.OPINION_SOURCES]
+
+
+def test_vacuum_failure_is_a_warning_not_a_failed_purge(monkeypatch):
+    fake = FakeDB(_main_docs())
+    fake.install(monkeypatch)
+
+    def boom(conn, tables):
+        raise RuntimeError("canceling statement due to statement timeout")
+    monkeypatch.setattr(db, "vacuum_analyze", boom)
+    r = retention.purge(None, TODAY, 14, sources=retention.NEWS_SOURCES, vacuum=True)
+    assert r["deleted"] > 0 and r["vacuumed"] is False and "statement timeout" in r["vacuum_error"]
+
+
+def test_vacuum_raises_timeout_only_for_the_vacuum_session():
+    class Cur:
+        def __init__(self, log): self.log = log
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, params=None): self.log.append(sql)
+        def fetchone(self): return ("rag.chunk",)
+
+    class Conn:
+        autocommit = False
+        def __init__(self): self.log = []
+        def commit(self): pass
+        def cursor(self): return Cur(self.log)
+
+    c = Conn()
+    db.vacuum_analyze(c, ["rag.chunk"])
+    assert c.log[0] == f"SET statement_timeout = '{db.VACUUM_TIMEOUT}'"
+    assert "VACUUM (ANALYZE) rag.chunk" in c.log and c.log[-1] == "RESET statement_timeout"
+    assert c.autocommit is False
