@@ -1232,6 +1232,22 @@ def save_largest_holders(conn, company_id: int, rows: list[dict]) -> int:
     return len(rows)
 
 
+def save_financial_items(conn, company_id: int, rows: list[dict]) -> int:
+    """회사·연도·재무제표 구분 단위로 통째로 교체 (매핑을 고치면 남는 옛 항목이 없게). core.financial_fact 는 건드리지 않음."""
+    keys = {(r["fiscal_year"], r["report_code"], r["fs_div"]) for r in rows}
+    with conn.cursor() as cur:
+        for fy, code, fs in keys:
+            cur.execute("DELETE FROM core.financial_item WHERE company_id = %s AND fiscal_year = %s AND report_code = %s "
+                        "AND fs_div = %s", [company_id, fy, code, fs])
+        cur.executemany(
+            "INSERT INTO core.financial_item (company_id, fiscal_year, report_code, fs_div, item, sj_div, account_id, account_nm, "
+            "amount, rcept_no) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            [[company_id, r["fiscal_year"], r["report_code"], r["fs_div"], r["item"], r["sj_div"], r["account_id"], r["account_nm"],
+              r["amount"], r["rcept_no"]] for r in rows])
+    conn.commit()
+    return len(rows)
+
+
 def save_audit_opinions(conn, company_id: int, rows: list[dict]) -> int:
     """접수번호 단위로 통째로 교체 (정정 보고로 행 수가 바뀌어도 남는 행이 없게)."""
     import json

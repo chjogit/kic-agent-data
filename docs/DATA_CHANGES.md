@@ -10,6 +10,11 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 
 ---
 
+### 2026-11-03 감가상각·이자비용 항목 매핑 확대 (#36, kic-agent-data `sql/033`) — 추가만
+- **변경**: 새 표 `core.financial_item`(회사·연도·연결/별도별 감가상각·무형자산상각·사용권자산상각·합산 D&A·이자비용·금융비용·이자지급 항목)과 뷰 `core.v_ebitda_coverage`(영업이익 + 상각 = EBITDA, 영업이익 / 이자비용 = 이자보상배율). 작업 `financial-items` 매주. `core.financial_fact` 는 변경 없음.
+- **영향**: 입력이 있을 때만 값, 없으면 NULL(미확보). 2025 사업보고서 기준 감가상각 확보 5→약 53개사, 이자비용 34→61개사(금융비용은 외환손실 등을 포함해 이자비용으로 대체하지 않음). 나머지는 현금흐름표에 상각을 따로 적지 않고 주석에만 있어 미확보.
+- **필요 조치**: 기업가치 담당은 `v_ebitda_coverage` 사용, `ebitda_complete` 가 false 면 무형자산상각 미확인(하한 근사).
+
 ### 2026-11-03 감사의견 구분 정형화 (#35, kic-agent-data `sql/032`) — 추가만
 - **변경**: 새 표 `core.audit_opinion`(사업보고서별 감사인·감사의견 원문·구분 `opinion_class`(unqualified 적정/qualified 한정/adverse 부적정/disclaimer 의견거절/unknown 미확인)·강조사항·핵심감사사항·`has_emphasis`·`going_concern`)과 뷰 `core.v_audit_opinion_latest`(회사·연도별 가장 나쁜 의견). 원천은 DART `accnutAdtorNmNdAdtOpinion`. 작업 `audit-opinion` 매주.
 - **영향**: 기존 표 변화 없음. DART 가 자리표시 행('-')만 주는 회사(2025 사업보고서 기준 5개사 전부, 9개사 일부 행)는 `unknown` — 추정하지 않음. `going_concern` 은 강조사항·특기사항 문장에 '계속기업'이 있을 때만 true.

@@ -364,6 +364,47 @@ def fetch_largest_holder(session, corp_code: str, fiscal_year: int, report_code:
                                 fiscal_year, report_code)
 
 
+# ---------- 감가상각·이자비용 항목 매핑 (#36): 전체 재무제표(fnlttSinglAcntAll)의 현금흐름표·손익계산서에서 항목을 골라냄 ----------
+ITEM_SJ = ("IS", "CIS", "CF")
+
+
+def fin_item(sj_div: str, account_id: str, account_nm: str) -> str | None:
+    """계정 → 항목 이름. dep_amort 감가상각비 및 무형자산상각비(합산 계정) / depreciation 감가상각비 / rou_depreciation 사용권자산상각비 / amortization 무형자산상각비 /
+    interest_expense 이자비용 / finance_costs 금융비용(이자 외 외환손실 등 포함) / interest_paid 이자지급(현금흐름).
+    표준계정 ID 를 우선하고, 없으면 계정명 변형으로 찾습니다. 상각후원가 금융자산처럼 이름만 비슷한 계정은 제외."""
+    if sj_div not in ITEM_SJ:
+        return None
+    a, n = account_id or "", re.sub(r"\s+", "", account_nm or "")
+    if a.endswith("DepreciationAndAmortisationExpense") or n in ("감가상각비및무형자산상각비", "감가상각비와무형자산상각비"):
+        return "dep_amort"
+    if "DepreciationRightofuse" in a or ("사용권자산" in n and "상각" in n and "취득" not in n and "처분" not in n):
+        return "rou_depreciation"
+    if a.endswith("AdjustmentsForDepreciationExpense") or re.match(r"^(유형자산)?감가상각비(에대한조정|\(유형자산\))?$", n) \
+            or n in ("유형자산상각비", "유형자산감가상각비"):
+        return "depreciation"
+    if a.endswith("AdjustmentsForAmortisationExpense") or n.startswith("무형자산상각비"):
+        return "amortization"
+    if re.search(r"(^|_)(AdjustmentsForInterestExpenses?|InterestExpense|InterestExpenseFinanceExpense)$", a) or n in ("이자비용", "이자비용(금융비용)", "이자비용조정"):
+        return "interest_expense"
+    if a == "ifrs-full_FinanceCosts" or n in ("금융비용", "금융원가"):
+        return "finance_costs"
+    if a.startswith("ifrs-full_InterestPaid") or n in ("이자의지급", "이자지급", "이자지급(영업)"):
+        return "interest_paid"
+    return None
+
+
+def extract_fin_items(rows: list[dict]) -> list[dict]:
+    """parse_financials 결과 중 위 항목에 해당하고 금액이 있는 행만 (같은 항목이 IS·CF 에 중복돼도 둘 다 둠)."""
+    out = []
+    for r in rows:
+        item = fin_item(r["sj_div"], r["account_id"], r["account_nm"])
+        if item and r["amount"] is not None:
+            out.append({"fiscal_year": r["fiscal_year"], "report_code": r["report_code"], "fs_div": r["fs_div"], "item": item,
+                        "sj_div": r["sj_div"], "account_id": r["account_id"], "account_nm": r["account_nm"],
+                        "amount": r["amount"], "rcept_no": r["rcept_no"]})
+    return out
+
+
 # ---------- 감사의견 (accnutAdtorNmNdAdtOpinion.json: 회계감사인의 명칭 및 감사의견) ----------
 NO_MATTER = {"", "-", "해당사항 없음", "해당 사항 없음", "해당사항없음", "없음"}
 
