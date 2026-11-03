@@ -10,6 +10,11 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 
 ---
 
+### 2026-11-03 지분공시 수집·정형화 (#34, kic-agent-data `sql/030`) — 추가만
+- **변경**: DART 지분공시(유형 D) 목록을 `core.disclosure`(category `D`)에 추가 수집(작업 `disclosures-ownership` 매일·`backfill-disclosures-ownership` 1회). 정형 새 표 `core.ownership_report`(대량보유상황보고: 접수번호·보고자·보고일·보유 주식 수·보유 비율%·증감%p·보고 사유)와 `core.largest_holder`(최대주주 및 특수관계인: 사업연도·성명·관계·주식 종류·기말 지분율%·기초 지분율%), 뷰 `core.v_largest_holder_total`(보통주 합계). 작업 `ownership` 매주. 기존 A·B·I 수집과 표는 그대로.
+- **영향**: 기존 표·열 변화 없음. 임원·주요주주 소유보고는 `core.disclosure` 목록(`category='D'`)만 있고 지분율 정형 표는 아직 없음. 필드 이름은 DART 개발가이드 기준이라 첫 실행 후 `probe-ownership` 로 확인 필요(원 응답은 `raw` jsonb 에 보존).
+- **필요 조치**: 지배구조·경영진 담당 팀원은 `core.ownership_report`·`core.largest_holder` 를 읽기 전용으로 사용.
+
 ### 2026-11-03 새 뉴스·공시 청크 자동 임베딩 (#27, kic-agent-data)
 - **변경**: `embed-docs` 가 자동 실행기에서 하루 1회 돕니다(계산 줄, `purge-news` 다음). 청크가 없는 문서만 처리(멱등), DB 800MB 상한 유지. 새 시크릿 `UPSTAGE_API_KEY`(없으면 그 작업만 건너뜀).
 - **영향**: `rag.chunk` 가 새 뉴스까지 따라갑니다. 11/3 점검 시점에 청크가 없는 문서는 naver_news 13,312건·finnhub_news 2,137건이었고(밀린 분량 적재 전), 적재 뒤 약 +87MB(메인 573MB → 약 660MB 추정). 청크 인용을 쓰는 SH(`dart_sec_risk_examiner`)·CH 는 최근 뉴스 청크가 늘어납니다.

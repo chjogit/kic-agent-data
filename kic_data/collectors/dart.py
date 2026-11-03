@@ -219,6 +219,8 @@ EVENT_KEYWORDS = [
     ("사업보고서", "annual_report"),
     ("반기보고서", "half_year_report"),
     ("분기보고서", "quarterly_report"),
+    # --- 지분공시(D). 임원·주요주주 소유상황보고서는 event_type 을 비워 둠(기존 테스트가 None 으로 고정, category 'D' 로 구분) ---
+    ("대량보유상황보고서", "major_holding_report"),
 ]
 
 
@@ -279,3 +281,84 @@ def fetch_disclosures(session, corp_code: str | None, bgn_de: str, end_de: str, 
             break
         page += 1
     return rows
+
+
+# ---------- 지분공시 정형 응답 (대량보유상황보고 majorstock.json · 최대주주 현황 hyslrSttus.json) ----------
+def _check_status(payload: dict) -> bool:
+    """013(조회된 데이터 없음)이면 False, 다른 오류면 예외."""
+    status = payload.get("status")
+    if status == "013":
+        return False
+    if status != "000":
+        raise RuntimeError(f"[dart] {status} {STATUS.get(status, payload.get('message', ''))}")
+    return True
+
+
+def _date(value) -> str | None:
+    d = re.sub(r"\D", "", value or "")
+    return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else None
+
+
+def parse_major_stock(payload: dict) -> list[dict]:
+    """주식등의 대량보유상황보고(5% 룰) 보고 한 건 = 한 행. 지분율은 % 숫자, 읽지 못하면 None."""
+    if not _check_status(payload):
+        return []
+    rows = []
+    for it in payload.get("list", []):
+        no = (it.get("rcept_no") or "").strip()
+        if not no:
+            continue
+        rows.append(
+            {
+                "rcept_no": no,
+                "rcept_dt": _date(it.get("rcept_dt")),
+                "repror": (it.get("repror") or "").strip(),
+                "report_tp": (it.get("report_tp") or "").strip() or None,
+                "report_resn": (it.get("report_resn") or "").strip() or None,
+                "stkqy": to_decimal(it.get("stkqy")),
+                "stkrt": to_decimal(it.get("stkrt")),
+                "stkrt_irds": to_decimal(it.get("stkrt_irds")),
+                "ctr_stkrt": to_decimal(it.get("ctr_stkrt")),
+                "raw": it,
+            }
+        )
+    return rows
+
+
+def fetch_major_stock(session, corp_code: str) -> list[dict]:
+    params = {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code}
+    return parse_major_stock(get_json(session, "dart", f"{BASE}/majorstock.json", params=params, limiter=_limiter))
+
+
+def parse_largest_holder(payload: dict, fiscal_year: int, report_code: str) -> list[dict]:
+    """최대주주 및 특수관계인 현황. 기말 지분율(trmend_posesn_stock_qota_rt)을 stake_rt 로 둡니다."""
+    if not _check_status(payload):
+        return []
+    rows = []
+    for it in payload.get("list", []):
+        name = (it.get("nm") or "").strip()
+        if not name:
+            continue
+        rows.append(
+            {
+                "fiscal_year": fiscal_year,
+                "report_code": report_code,
+                "holder": name,
+                "relate": (it.get("relate") or "").strip() or None,
+                "stock_kind": (it.get("stock_knd") or "").strip() or "",
+                "end_qty": to_decimal(it.get("trmend_posesn_stock_co")),
+                "stake_rt": to_decimal(it.get("trmend_posesn_stock_qota_rt")),
+                "begin_rt": to_decimal(it.get("bsis_posesn_stock_qota_rt")),
+                "settle_dt": _date(it.get("stlm_dt")),
+                "rcept_no": (it.get("rcept_no") or "").strip() or None,
+                "raw": it,
+            }
+        )
+    return rows
+
+
+def fetch_largest_holder(session, corp_code: str, fiscal_year: int, report_code: str = REPORT_ANNUAL) -> list[dict]:
+    params = {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
+              "bsns_year": str(fiscal_year), "reprt_code": report_code}
+    return parse_largest_holder(get_json(session, "dart", f"{BASE}/hyslrSttus.json", params=params, limiter=_limiter),
+                                fiscal_year, report_code)
