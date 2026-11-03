@@ -10,6 +10,11 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 
 ---
 
+### 2026-11-03 감사의견 구분 정형화 (#35, kic-agent-data `sql/032`) — 추가만
+- **변경**: 새 표 `core.audit_opinion`(사업보고서별 감사인·감사의견 원문·구분 `opinion_class`(unqualified 적정/qualified 한정/adverse 부적정/disclaimer 의견거절/unknown 미확인)·강조사항·핵심감사사항·`has_emphasis`·`going_concern`)과 뷰 `core.v_audit_opinion_latest`(회사·연도별 가장 나쁜 의견). 원천은 DART `accnutAdtorNmNdAdtOpinion`. 작업 `audit-opinion` 매주.
+- **영향**: 기존 표 변화 없음. DART 가 자리표시 행('-')만 주는 회사(2025 사업보고서 기준 5개사 전부, 9개사 일부 행)는 `unknown` — 추정하지 않음. `going_concern` 은 강조사항·특기사항 문장에 '계속기업'이 있을 때만 true.
+- **필요 조치**: 재무·회계 담당은 `v_audit_opinion_latest` 사용. `unknown` 은 '확인 불가'로 표기(적정으로 간주 금지).
+
 ### 2026-11-03 지분공시 수집·정형화 (#34, kic-agent-data `sql/030`) — 추가만
 - **변경**: DART 지분공시(유형 D) 목록을 `core.disclosure`(category `D`)에 추가 수집(작업 `disclosures-ownership` 매일·`backfill-disclosures-ownership` 1회). 정형 새 표 `core.ownership_report`(대량보유상황보고: 접수번호·보고자·보고일·보유 주식 수·보유 비율%·증감%p·보고 사유)와 `core.largest_holder`(최대주주 및 특수관계인: 사업연도·성명·관계·주식 종류·기말 지분율%·기초 지분율%), 뷰 `core.v_largest_holder_total`(보통주 합계). 작업 `ownership` 매주. 기존 A·B·I 수집과 표는 그대로.
 - **영향**: 기존 표·열 변화 없음. 임원·주요주주 소유보고는 `core.disclosure` 목록(`category='D'`)만 있고 지분율 정형 표는 아직 없음. 필드 이름은 DART 개발가이드 기준이라 첫 실행 후 `probe-ownership` 로 확인 필요(원 응답은 `raw` jsonb 에 보존).
