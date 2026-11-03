@@ -182,6 +182,10 @@ JOBS: list[Job] = [
         {"days": None, "dry_run": False, "vacuum": True}, every=DAY, needs=DB),
     Job("purge-news", "뉴스·유튜브 댓글 보관 기한 정리(일별 집계 후 문서·감성·청크 삭제)", "cmd_purge_news",
         {"days": None, "dry_run": False, "vacuum": True}, every=DAY, needs=DB),
+    Job("embed-docs", "청크 없는 뉴스·공시 문서 증분 임베딩(rag.chunk, 800MB 상한·멱등)", "cmd_embed",
+        {"source": None, "model": "upstage", "batch": 64, "limit": None, "since": None, "until": None, "dry_run": False},
+        every=DAY, needs=DB + ("UPSTAGE_API_KEY",)),
+    # ↑ purge-news 바로 뒤에 둬서 같은 실행에서 지운 문서는 임베딩하지 않음 (계산 줄: 수집이 끝난 뒤 돎)
     Job("mentions", "언급량 스냅샷", "cmd_pulse", {"tickers": None, "max_age": 0, "market_hours": False},
         every=SIX_HOURS, needs=DB + NAVER, split=("KR", "US"), chunk=25),
     # 재무: 국내는 다중회사 주요계정(100개사씩)이라 몇 번의 호출로 끝남

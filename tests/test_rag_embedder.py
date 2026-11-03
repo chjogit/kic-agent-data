@@ -93,3 +93,10 @@ def test_request_uses_passage_model_and_bearer_header():
     s = Session(Resp(200, {"data": [{"index": 0, "embedding": _vec(1.0)}]}))
     _embedder(s).encode(["a"])
     assert s.calls[0][1] == {"model": "solar-embedding-2-passage", "input": ["a"]}
+
+
+def test_calls_counts_successful_requests_only():
+    body = {"data": [{"index": 0, "embedding": _vec(1.0)}], "usage": {"total_tokens": 7}}
+    emb = _embedder(Session(Resp(429), Resp(200, body)))
+    emb.encode(["a"])
+    assert emb.calls == 1 and emb.tokens == 7

@@ -97,6 +97,7 @@ class UpstageEmbedder:
         self.retries = retries
         self.sleep = sleep
         self.tokens = 0  # usage.total_tokens 누계 (비용 확인용)
+        self.calls = 0   # 성공한 API 호출 수 (재시도 제외, 로그용)
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         key = env("UPSTAGE_API_KEY")
@@ -126,6 +127,7 @@ class UpstageEmbedder:
         for r in rows:
             if len(r) != EMBED_DIM:
                 raise RuntimeError(f"임베딩 차원 {len(r)} != 테이블 차원 {EMBED_DIM}")
+        self.calls += 1
         self.tokens += int((body.get("usage") or {}).get("total_tokens") or 0)
         return rows
 
@@ -199,4 +201,5 @@ def ingest(conn, embedder, sources=TARGET_SOURCES, limit: int | None = None, sin
         rows = [(doc_id, idx, text, vec_literal(v)) for (doc_id, idx, text), v in zip(items, vectors)]
         result["written"] += db.insert_chunks(conn, rows, vec_type)
     result["tokens"] = getattr(embedder, "tokens", None)  # Upstage 사용 토큰 누계 (없으면 None)
+    result["calls"] = getattr(embedder, "calls", None)    # Upstage 호출 수 (없으면 None)
     return result

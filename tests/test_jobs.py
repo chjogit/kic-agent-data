@@ -557,3 +557,16 @@ def test_after_kst_recheck_until_evening_cutoff():
     # 오전에 수동으로 끝낸 것은 재확인 대상이 아님 (그날 18:30 에 한 번)
     morning = {"last_complete": datetime(2026, 10, 30, 9, 0, tzinfo=kst)}
     assert jobs.due_reason(job, morning, datetime(2026, 10, 30, 11, 0, tzinfo=kst), []) is None
+
+
+def test_embed_docs_is_a_daily_calc_lane_job_after_purge_news():
+    from kic_data import cli
+
+    names = [j.name for j in jobs.JOBS]
+    job = jobs.JOB_BY_NAME["embed-docs"]
+    assert names.index("embed-docs") > names.index("purge-news")      # 지운 문서는 임베딩하지 않음
+    assert job.every == jobs.DAY and job.needs == jobs.DB + ("UPSTAGE_API_KEY",) and hasattr(cli, job.command)
+    assert jobs.lane_of(job) == jobs.CALC_LANE                         # 수집이 끝난 뒤 돎
+    ns = job.namespace()
+    assert ns.source is None and ns.dry_run is False and ns.model == "upstage" and ns.limit is None
+    assert job.missing_env(lambda k: "x" if k != "UPSTAGE_API_KEY" else None) == ["UPSTAGE_API_KEY"]
