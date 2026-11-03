@@ -3,6 +3,7 @@
 Neon(Postgres + pgvector)에 국내·해외 주식 데이터를 모으는 VS Code용 Python 프로젝트입니다.
 5개 관점(밸류에이션·펀더멘털·수급·거시·리스크) 에이전트와 오케스트레이터가 읽을 `features.json` 까지 만듭니다.
 수집 현황과 앞으로 필요한 데이터는 [`docs/DATA_STATUS.md`](docs/DATA_STATUS.md) 에 정리했습니다.
+스키마·DB 배치·환경변수·보관 정책이 바뀐 내역은 [`docs/DATA_CHANGES.md`](docs/DATA_CHANGES.md) 에 날짜순으로 기록합니다(OpenResearch 와 같은 내용을 공유).
 
 > **자동 수집 (10-26):** GitHub 비공개 저장소에 올리면 GitHub Actions 가 2시간마다 수집합니다 (서버·PC 불필요).
 > 설정 방법: [`docs/AUTO_RUN.md`](docs/AUTO_RUN.md). 웹 대시보드를 서버에 올리려면 [`docs/DEPLOY_VERCEL.md`](docs/DEPLOY_VERCEL.md) (선택).
