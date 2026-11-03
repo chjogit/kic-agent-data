@@ -10,6 +10,10 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 
 ---
 
+### 2026-11-03 감가상각·이자비용 항목 매핑 확대 (#36, kic-agent-data `sql/033`) — 추가만
+- **변경**: 새 표 `core.financial_item`(회사·연도·연결/별도별 감가상각·무형자산상각·사용권자산상각·합산 D&A·이자비용·금융비용·이자지급 항목)과 뷰 `core.v_ebitda_coverage`(영업이익 + 상각 = EBITDA, 영업이익 / 이자비용 = 이자보상배율). 작업 `financial-items` 매주. `core.financial_fact` 는 변경 없음.
+- **영향**: 입력이 있을 때만 값, 없으면 NULL(미확보). 2025 사업보고서 기준 감가상각 확보 5→약 53개사, 이자비용 34→61개사(금융비용은 외환손실 등을 포함해 이자비용으로 대체하지 않음). 나머지는 현금흐름표에 상각을 따로 적지 않고 주석에만 있어 미확보.
+- **필요 조치**: 기업가치 담당은 `v_ebitda_coverage` 사용, `ebitda_complete` 가 false 면 무형자산상각 미확인(하한 근사).
 ### 2026-11-03 지분공시 수집·정형화 (#34, kic-agent-data `sql/030`) — 추가만
 - **변경**: DART 지분공시(유형 D) 목록을 `core.disclosure`(category `D`)에 추가 수집(작업 `disclosures-ownership` 매일·`backfill-disclosures-ownership` 1회). 정형 새 표 `core.ownership_report`(대량보유상황보고: 접수번호·보고자·보고일·보유 주식 수·보유 비율%·증감%p·보고 사유)와 `core.largest_holder`(최대주주 및 특수관계인: 사업연도·성명·관계·주식 종류·기말 지분율%·기초 지분율%), 뷰 `core.v_largest_holder_total`(보통주 합계). 작업 `ownership` 매주. 기존 A·B·I 수집과 표는 그대로.
 - **영향**: 기존 표·열 변화 없음. 임원·주요주주 소유보고는 `core.disclosure` 목록(`category='D'`)만 있고 지분율 정형 표는 아직 없음. 필드 이름은 DART 개발가이드 기준이라 첫 실행 후 `probe-ownership` 로 확인 필요(원 응답은 `raw` jsonb 에 보존).

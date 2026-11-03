@@ -181,6 +181,8 @@ JOBS: list[Job] = [
         every=ONCE, needs=DB + ("DART_API_KEY",), split=("KR",), chunk=10, group="과거분(1회)"),
     Job("ownership", "대량보유상황보고·최대주주 지분율(정형)", "cmd_ownership", {"years": 3}, every=WEEK,
         needs=DB + ("DART_API_KEY",), group="재무"),
+    Job("financial-items", "감가상각·이자비용 항목 매핑(EBITDA·이자보상배율 입력)", "cmd_financial_items", {"years": 2}, every=WEEK,
+        needs=DB + ("DART_API_KEY",), group="재무"),
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
