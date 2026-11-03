@@ -34,11 +34,15 @@ CREATE TABLE IF NOT EXISTS core.largest_holder (
     PRIMARY KEY (company_id, fiscal_year, report_code, holder, stock_kind)
 );
 
--- 회사·연도별 최대주주 측 합계 지분율 (보통주 기준, 읽지 못한 값은 합계에서 제외)
+-- 회사·연도별 최대주주 측 지분율 (2025 사업보고서 실응답 확인, 11/3):
+--  · 주식 종류 표기가 회사마다 다름('보통주'·'의결권 있는 주식'·'우선주'·'의결권 없는 주식'·'합계'·'-')
+--  · 원문에 '계' 행(합계)이 따로 있어 개인별 합산에서 빼고, 보고된 합계는 별도 열로 둠
 CREATE OR REPLACE VIEW core.v_largest_holder_total AS
 SELECT c.market, c.ticker, c.name, h.fiscal_year,
-       sum(h.stake_rt) FILTER (WHERE h.stock_kind LIKE '%보통%') AS common_stake_rt,
-       count(*) AS n_holders, max(h.settle_dt) AS settle_dt
+       sum(h.stake_rt) FILTER (WHERE h.holder <> '계' AND h.stock_kind IN ('보통주', '의결권 있는 주식')) AS common_stake_rt,
+       coalesce(max(h.stake_rt) FILTER (WHERE h.holder = '계' AND h.stock_kind IN ('보통주', '의결권 있는 주식')),
+                max(h.stake_rt) FILTER (WHERE h.holder = '계' AND h.stock_kind IN ('합계', '-'))) AS reported_total_rt,
+       count(*) FILTER (WHERE h.holder <> '계') AS n_holders, max(h.settle_dt) AS settle_dt
 FROM core.largest_holder h JOIN core.company c USING (company_id)
 GROUP BY c.market, c.ticker, c.name, h.fiscal_year;
 
