@@ -1197,3 +1197,24 @@ def save_bond_issues(conn, company_id: int, rows: list[dict]) -> int:
             [[company_id] + [r[c] for c in cols] + [json.dumps(r["raw"], ensure_ascii=False, default=str)] for r in rows])
     conn.commit()
     return len(rows)
+
+
+def save_credit_balance(conn, rows: list[dict]) -> int:
+    import json
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO core.credit_balance (bas_dt, loan_total, fields, raw) VALUES (%s, %s, %s::jsonb, %s::jsonb) "
+            "ON CONFLICT (bas_dt) DO UPDATE SET loan_total=EXCLUDED.loan_total, fields=EXCLUDED.fields, raw=EXCLUDED.raw, "
+            "collected_at=now()",
+            [[r["bas_dt"], r["loan_total"], json.dumps(r["values"]), json.dumps(r["raw"], ensure_ascii=False, default=str)]
+             for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def credit_balance_last(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(bas_dt) FROM core.credit_balance")
+        row = cur.fetchone()
+    return row[0] if row else None

@@ -175,6 +175,8 @@ JOBS: list[Job] = [
     Job("bond-issue", "회사채 발행 종목(표면이율·고정/변동·만기, 금융위원회)", "cmd_bond_issue", {"bas_dt": None},
         every=DAY, needs=DB + ("DART_API_KEY",), needs_any=DATA_GO, group="재무", after_kst=dtime(13, 30)),
     # ↑ 회사당 1회(약 210회/일, 키 10,000회/일). 원천은 기준일 다음 영업일 13시 이후 갱신
+    Job("credit-balance", "신용공여 잔고(시장 전체, 종목별 아님)", "cmd_credit_balance", {"days": 400}, every=DAY,
+        needs=DB, needs_any=DATA_GO, group="수급"),
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),
