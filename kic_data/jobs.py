@@ -179,6 +179,8 @@ JOBS: list[Job] = [
         every=DAY, needs=DB + ("DART_API_KEY",), group="재무"),
     Job("backfill-disclosures-ownership", "지분공시 목록 1년(D)", "cmd_disclosures", {"days": 365, "types": "D", "bulk": False},
         every=ONCE, needs=DB + ("DART_API_KEY",), split=("KR",), chunk=10, group="과거분(1회)"),
+    Job("audit-opinion", "감사의견 구분·강조사항·계속기업(정형)", "cmd_audit_opinion", {"years": 2}, every=WEEK,
+        needs=DB + ("DART_API_KEY",), group="재무"),
     Job("ownership", "대량보유상황보고·최대주주 지분율(정형)", "cmd_ownership", {"years": 3}, every=WEEK,
         needs=DB + ("DART_API_KEY",), group="재무"),
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,

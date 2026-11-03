@@ -36,6 +36,7 @@
   collect-finnhub  해외 종목 영문 뉴스 (Finnhub, FINNHUB_API_KEY 있을 때만)
   collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-investor-flows  국내 종목 투자자별(외국인·기관·개인) 일별 순매수 (네이버 증권 공개 API)
+  collect-audit-opinion  감사의견 구분·강조사항·계속기업 (DART 정형 API)
   collect-ownership  지분공시: 대량보유상황보고·최대주주 지분율 (DART 정형 API)
   collect-lending  코스피 종목별 일별 주식 대차거래·잔고 (금융위원회 주식대차거래정보, 공매도 대용)
   collect-bond-issue  회사채 발행 종목: 표면이율·고정/변동·만기 (금융위원회 채권발행정보)
@@ -1116,6 +1117,31 @@ def cmd_ownership(args) -> int:
     return 1 if bad else 0
 
 
+def cmd_audit_opinion(args) -> int:
+    """감사의견 구분(적정·한정·부적정·의견거절)·강조사항·계속기업 불확실성 (DART 정형 API, 최근 사업보고서 --years 개)."""
+    s = make_session()
+    bad = n = unknown = 0
+    years = [date.today().year - k for k in range(1, args.years + 1)]
+    with db.connect() as conn:
+        for cid, ticker, _, corp_code, _ in db.list_companies(conn, "KR"):
+            if not corp_code:
+                print(f"[WARN] {ticker} corp_code 없음 → sync-dart-codes 먼저")
+                continue
+            try:
+                rows = [r for y in years for r in dart.fetch_audit_opinion(s, corp_code, y)]
+            except RuntimeError as exc:
+                _fail(f"KR:{ticker}", f"감사의견: {exc}")
+                bad += 1
+                if re.search(r"\[dart\] (010|011|020)", str(exc)):   # 키 오류·요청 한도 초과면 나머지도 같으므로 멈춤
+                    break
+                continue
+            n += db.save_audit_opinions(conn, cid, rows)
+            unknown += sum(1 for r in rows if r["opinion_class"] == "unknown")
+            _ok(f"KR:{ticker}", f"감사의견 {len(rows)}행 (미확인 {sum(1 for r in rows if r['opinion_class'] == 'unknown')})")
+    print(f"[요약] 감사의견 {n}행 · 미확인 {unknown}행 · 추정 용량 {n * 1.5:.0f}KB (행당 1.5KB, raw 포함)")
+    return 1 if bad else 0
+
+
 def cmd_probe_ownership(args) -> int:
     """지분공시 원 응답을 몇 종목만 출력합니다 (DB 에 쓰지 않음, 필드 이름·단위 확인용)."""
     import json
@@ -1944,6 +1970,9 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-ownership", help="지분공시: 대량보유상황보고·최대주주 지분율 (DART 정형 API)")
     a.add_argument("--years", type=int, default=3, help="최대주주 현황을 받을 사업연도 수 (전년도부터)")
     a.set_defaults(fn=cmd_ownership)
+    a = sub.add_parser("collect-audit-opinion", help="감사의견 구분·강조사항·계속기업 불확실성 (DART 정형 API)")
+    a.add_argument("--years", type=int, default=2, help="받을 사업연도 수 (전년도부터; 각 사업보고서에 전기분도 들어 있음)")
+    a.set_defaults(fn=cmd_audit_opinion)
     a = sub.add_parser("probe-ownership", help="지분공시 원 응답 확인 (DB 에 쓰지 않음)")
     a.add_argument("--tickers", default="005930,005380,000660")
     a.add_argument("--rows", type=int, default=3)
