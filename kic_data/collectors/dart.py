@@ -403,3 +403,70 @@ def extract_fin_items(rows: list[dict]) -> list[dict]:
                         "sj_div": r["sj_div"], "account_id": r["account_id"], "account_nm": r["account_nm"],
                         "amount": r["amount"], "rcept_no": r["rcept_no"]})
     return out
+
+
+# ---------- 감사의견 (accnutAdtorNmNdAdtOpinion.json: 회계감사인의 명칭 및 감사의견) ----------
+NO_MATTER = {"", "-", "해당사항 없음", "해당 사항 없음", "해당사항없음", "없음"}
+
+
+def classify_opinion(text: str | None) -> str:
+    """감사의견 원문 → unqualified(적정) / qualified(한정) / adverse(부적정) / disclaimer(의견거절) / unknown(미확인).
+    '부적정'에 '적정'이 들어 있으므로 부정 쪽을 먼저 봅니다."""
+    t = re.sub(r"\s+", "", text or "")
+    if "의견거절" in t:
+        return "disclaimer"
+    if "부적정" in t:
+        return "adverse"
+    if "한정" in t:
+        return "qualified"
+    if "적정" in t:
+        return "unqualified"
+    return "unknown"
+
+
+def _matter(value) -> str | None:
+    """강조사항 등 문장. 필드가 없으면 None(미확인), '해당사항 없음' 류는 빈 문자열(없음 확정)."""
+    if value is None:
+        return None
+    t = re.sub(r"\s+", " ", str(value)).strip()
+    return "" if t in NO_MATTER else t
+
+
+def parse_audit_opinion(payload: dict) -> list[dict]:
+    """감사의견 행 목록. 한 접수번호에 당기·전기·(전전기)와 연결·별도 행이 섞여 오므로 순서(seq)를 함께 둡니다.
+    계속기업 불확실성은 강조사항·감사보고서 특기사항 문장에 '계속기업'이 있는지로만 판단하고, 필드가 없으면 None."""
+    if not _check_status(payload):
+        return []
+    rows = []
+    for seq, it in enumerate(payload.get("list", [])):
+        no = (it.get("rcept_no") or "").strip()
+        stlm = _date(it.get("stlm_dt"))
+        if not no or not stlm:
+            continue
+        emphasis, special = _matter(it.get("emphs_matter")), _matter(it.get("adt_reprt_spcmnt_matter"))
+        texts = [x for x in (emphasis, special) if x]
+        known = emphasis is not None or special is not None
+        rows.append(
+            {
+                "rcept_no": no,
+                "seq": seq,
+                "settle_dt": stlm,
+                "fiscal_year": int(stlm[:4]),
+                "period_label": re.sub(r"\s+", "", (it.get("bsns_year") or "")),
+                "auditor": (it.get("adtor") or "").strip() or None,
+                "opinion_raw": (it.get("adt_opinion") or "").strip() or None,
+                "opinion_class": classify_opinion(it.get("adt_opinion")),
+                "emphasis": emphasis,
+                "core_matter": _matter(it.get("core_adt_matter")),
+                "has_emphasis": bool(texts) if known else None,
+                "going_concern": any("계속기업" in x for x in texts) if known else None,
+                "raw": it,
+            }
+        )
+    return rows
+
+
+def fetch_audit_opinion(session, corp_code: str, fiscal_year: int, report_code: str = REPORT_ANNUAL) -> list[dict]:
+    params = {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
+              "bsns_year": str(fiscal_year), "reprt_code": report_code}
+    return parse_audit_opinion(get_json(session, "dart", f"{BASE}/accnutAdtorNmNdAdtOpinion.json", params=params, limiter=_limiter))

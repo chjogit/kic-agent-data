@@ -1246,3 +1246,21 @@ def save_financial_items(conn, company_id: int, rows: list[dict]) -> int:
               r["amount"], r["rcept_no"]] for r in rows])
     conn.commit()
     return len(rows)
+
+
+def save_audit_opinions(conn, company_id: int, rows: list[dict]) -> int:
+    """접수번호 단위로 통째로 교체 (정정 보고로 행 수가 바뀌어도 남는 행이 없게)."""
+    import json
+
+    with conn.cursor() as cur:
+        for no in {r["rcept_no"] for r in rows}:
+            cur.execute("DELETE FROM core.audit_opinion WHERE company_id = %s AND rcept_no = %s", [company_id, no])
+        cur.executemany(
+            "INSERT INTO core.audit_opinion (company_id, rcept_no, seq, settle_dt, fiscal_year, period_label, auditor, opinion_raw, "
+            "opinion_class, emphasis, core_matter, has_emphasis, going_concern, raw) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            [[company_id, r["rcept_no"], r["seq"], r["settle_dt"], r["fiscal_year"], r["period_label"], r["auditor"],
+              r["opinion_raw"], r["opinion_class"], r["emphasis"], r["core_matter"], r["has_emphasis"], r["going_concern"],
+              json.dumps(r["raw"], ensure_ascii=False, default=str)] for r in rows])
+    conn.commit()
+    return len(rows)
