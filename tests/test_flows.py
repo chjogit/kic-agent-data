@@ -122,16 +122,17 @@ class LendingCommandTest(unittest.TestCase):
 
 
 class InvestorFlowCommandTest(unittest.TestCase):
-    def _run(self, companies, latest, served, only_lagging=True):
+    def _run(self, companies, latest, served, only_lagging=True, max_pages=None):
         from argparse import Namespace
         from contextlib import nullcontext
 
         from kic_data import cli
 
-        asked, written = [], []
+        asked, written, pages = [], [], []
 
-        def fetch(session, ticker, since):
+        def fetch(session, ticker, since, max_pages=10):
             asked.append(ticker)
+            pages.append(max_pages)
             return [{"trade_date": d} for d in served(ticker)]
 
         with mock.patch.object(cli.db, "connect", return_value=nullcontext(None)), \
@@ -140,8 +141,17 @@ class InvestorFlowCommandTest(unittest.TestCase):
              mock.patch.object(cli.db, "upsert_investor_flows", side_effect=lambda c, cid, rows, src: written.append(cid) or len(rows)), \
              mock.patch.object(cli.investor_flow, "fetch_flows", side_effect=fetch), \
              mock.patch.object(cli, "drop_incomplete_today", side_effect=lambda rows, market: rows):
-            rc = cli.cmd_investor_flows(Namespace(days=10, only_lagging=only_lagging))
+            rc = cli.cmd_investor_flows(Namespace(days=10, only_lagging=only_lagging, max_pages=max_pages))
+        self.pages = pages
         return rc, asked, written
+
+    def test_max_pages_defaults_to_10_and_can_be_raised_for_backfill(self):
+        d0 = date(2026, 10, 28)
+        companies = [(1, "000001", "a", None, None)]
+        self._run(companies, {}, lambda t: [d0], only_lagging=False)
+        self.assertEqual(self.pages, [10])
+        self._run(companies, {}, lambda t: [d0], only_lagging=False, max_pages=20)
+        self.assertEqual(self.pages, [20])
 
     def test_only_lagging_skips_up_to_date(self):
         d0, d1 = date(2026, 10, 28), date(2026, 10, 29)

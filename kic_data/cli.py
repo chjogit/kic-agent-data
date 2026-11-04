@@ -1503,6 +1503,7 @@ def cmd_investor_flows(args) -> int:
     s = make_session()
     since = date.today() - timedelta(days=args.days)
     only_lagging = getattr(args, "only_lagging", False)
+    max_pages = getattr(args, "max_pages", None) or 10   # 한 쪽 60거래일: 기본 10쪽≈600거래일. 더 먼 과거는 --max-pages 를 늘림
     bad = waiting = 0
     with db.connect() as conn:
         latest = db.latest_price_and_flow_dates(conn, "KR") if only_lagging else {}
@@ -1511,7 +1512,7 @@ def cmd_investor_flows(args) -> int:
             if only_lagging and price_d and flow_d and flow_d >= price_d:
                 continue
             try:
-                rows = drop_incomplete_today(investor_flow.fetch_flows(s, ticker, since), "KR")
+                rows = drop_incomplete_today(investor_flow.fetch_flows(s, ticker, since, max_pages=max_pages), "KR")
             except RuntimeError as exc:
                 _fail(f"KR:{ticker}", str(exc))
                 bad += 1
@@ -2041,6 +2042,7 @@ def main(argv=None) -> int:
                    help="영상 정렬 (기본 조회수 순: 댓글이 있는 영상 위주)")
     a.set_defaults(fn=cmd_youtube)
     a = sub.add_parser("collect-investor-flows"); a.add_argument("--days", type=int, default=10)
+    a.add_argument("--max-pages", type=int, default=None, help="종목당 최대 쪽 수(쪽당 60거래일, 기본 10). 과거 백필용")
     a.set_defaults(fn=cmd_investor_flows)
     a = sub.add_parser("collect-lending"); a.add_argument("--days", type=int, default=10)
     a.add_argument("--max-days", type=int, default=None, help="한 번에 받을 최대 거래일 수 (최근 날짜부터)")
