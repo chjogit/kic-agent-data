@@ -27,6 +27,8 @@ def parse_trend(payload) -> list[dict]:
         if not isinstance(it, dict) or not it.get("bizdate"):
             continue
         hold = to_decimal(str(it.get("foreignerHoldRatio") or "").replace("%", ""))
+        if hold is not None and not 0 <= hold <= 100:    # 보유율은 0~100%. 네이버가 이상값(예: 1000 이상)을 주면 칸(numeric 7,4)이 넘치므로 비움
+            hold = None
         rows.append({
             "trade_date": parse_ymd(it["bizdate"]),
             "foreign_net_qty": to_int(it.get("foreignerPureBuyQuant")),

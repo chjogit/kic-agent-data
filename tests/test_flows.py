@@ -18,6 +18,11 @@ class InvestorFlowTest(unittest.TestCase):
         self.assertEqual(rows, [{"trade_date": date(2026, 10, 23), "foreign_net_qty": -868997, "institution_net_qty": 627670,
                                  "individual_net_qty": -61043, "foreign_hold_pct": Decimal("46.11"), "volume": 16145972}])
 
+    def test_hold_ratio_out_of_range_becomes_none(self):
+        rows = investor_flow.parse_trend([_naver(date(2026, 10, 23), hold="12345.6%"), _naver(date(2026, 10, 22), hold="-3%"),
+                                          _naver(date(2026, 10, 21), hold="100%")])
+        self.assertEqual([r["foreign_hold_pct"] for r in rows], [None, None, Decimal("100")])
+
     def test_parse_error(self):
         with self.assertRaises(RuntimeError):
             investor_flow.parse_trend({"message": "not found"})
