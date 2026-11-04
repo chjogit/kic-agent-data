@@ -73,6 +73,17 @@ def freshness(last, today: date, max_age: int) -> str:
     return "OK" if age <= max_age else f"오래됨({age}일 전)"
 
 
+def _q_err(conn, sql: str) -> tuple[list[tuple] | None, str | None]:
+    """_q 와 같지만 실패 이유를 함께 돌려줌 ('조회 실패: <이유>' 표시용; 비워 두고 넘어가지 않게)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.fetchall(), None
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        return None, f"{type(exc).__name__}: {str(exc).splitlines()[0][:120]}"
+
+
 def _q(conn, sql: str, params=None) -> list[tuple] | None:
     """쿼리 실행. 테이블·컬럼이 없으면 None (트랜잭션 복구)."""
     try:
@@ -167,16 +178,20 @@ def collect(conn, today: date | None = None, opinion_conn=None, opinion_configur
           "FROM core.feature_snapshot WHERE as_of = (SELECT max(as_of) FROM core.feature_snapshot) GROUP BY company_id",
           ("feature_as_of", "features_filled", "features_total"))
     out["companies"] = list(per.values())
-    r = _q(conn, "SELECT count(*), max(bas_dt), max(collected_at) FROM core.credit_balance")
+    r, err = _q_err(conn, "SELECT count(*), max(bas_dt), max(collected_at) FROM core.credit_balance")
     out["market_indicators"] = [{"label": "신용공여 잔고(시장 전체)", "rows": r[0][0], "last_date": r[0][1],
-                                 "last_collected": r[0][2]}] if r else []
+                                 "last_collected": r[0][2], "error": None}] if r else ([] if err is None else [
+        {"label": "신용공여 잔고(시장 전체)", "rows": None, "last_date": None, "last_collected": None, "error": err}])
     out["new_collections"] = []
     for tbl, label, dcol, freq in NEW_TABLES:
-        r = _q(conn, f"SELECT count(*), count(DISTINCT company_id), {f'max({dcol})' if dcol else 'NULL'}, max(collected_at) FROM {tbl}")
+        r, err = _q_err(conn, f"SELECT count(*), count(DISTINCT company_id), {f'max({dcol})' if dcol else 'NULL'}, max(collected_at) FROM {tbl}")
         if r:
             n, cos_n, last_dt, last_at = r[0]
             out["new_collections"].append({"table": tbl, "label": label, "rows": n, "companies": cos_n,
-                                           "last_date": last_dt, "last_collected": last_at, "freq": freq})
+                                           "last_date": last_dt, "last_collected": last_at, "freq": freq, "error": None})
+        elif err:
+            out["new_collections"].append({"table": tbl, "label": label, "rows": None, "companies": None,
+                                           "last_date": None, "last_collected": None, "freq": freq, "error": err})
 
     out["indices"] = [dict(zip(("symbol", "name", "rows", "from", "to"), r)) for r in _q(
         conn, "SELECT symbol, max(name), count(*), min(trade_date), max(trade_date) FROM core.market_index_daily "
@@ -262,6 +277,9 @@ def render(st: dict) -> str:
 
     lines += ["", "[새 수집] 표별 (최신성 = 마지막 수집 시각, 주 1회 작업은 10일 기준)"]
     for t in st.get("new_collections", []):
+        if t.get("error"):
+            lines.append(f"  {t['label']:<22}조회 실패: {t['error']}")
+            continue
         got = t["last_collected"]
         got = got.date() if hasattr(got, "date") else got
         lines.append(f"  {t['label']:<22}{t['rows']:>7}행  종목 {t['companies']:>3}개  기준일 {_s(t['last_date'])}  "
@@ -269,7 +287,8 @@ def render(st: dict) -> str:
     if not st.get("new_collections"):
         lines.append("  없음 (표가 없거나 아직 수집 전)")
     lines += ["", "[시장 지표] (시장 전체 합계, 종목별 아님; 최신성은 평일 2일 기준)"]
-    lines += [f"  {m['label']:<20}{m['rows']:>6}행  최신 기준일 {_s(m['last_date'])}  "
+    lines += [f"  {m['label']:<20}조회 실패: {m['error']}" if m.get("error") else
+              f"  {m['label']:<20}{m['rows']:>6}행  최신 기준일 {_s(m['last_date'])}  "
               f"{market_freshness(m['last_date'], today)}" for m in st.get("market_indicators", [])] or ["  없음 (collect-credit-balance)"]
     lines += ["", "[시장 지수]"]
     lines += [f"  {i['symbol']:<7}{(i['name'] or ''):<14}{i['rows']:>5}행 {i['from']}~{i['to']}  "
