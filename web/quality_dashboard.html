@@ -277,6 +277,9 @@ async function loadData() {
     ${table(['표', {t:'행', num:1}, {t:'종목', num:1}, '기준일', '마지막 수집'], (d.new_collections||[]).map(x => `<tr>
       <td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td class="num">${num(x.companies)}</td>
       <td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td></tr>`))}
+    <h3 class="sub">시장 지표 (시장 전체 합계, 종목별 아님)</h3>
+    ${table(['지표', {t:'행', num:1}, '최신 기준일', '마지막 수집'], (d.market_indicators||[]).map(x => `<tr>
+      <td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td></tr>`))}
   `;
 }
 

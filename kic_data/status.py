@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from . import db
 from .config import env
@@ -47,6 +47,20 @@ def db_usage(size_bytes: int | None, warn_mb: int | None = None) -> dict | None:
     mb = size_bytes / (1024 * 1024)
     return {"mb": round(mb, 1), "warn_mb": warn_mb, "limit_mb": DB_LIMIT_MB,
             "pct": round(mb / DB_LIMIT_MB * 100, 1), "over": mb >= warn_mb}
+
+
+def business_days_since(last, today: date) -> int:
+    """last 다음 날부터 today 까지의 평일 수 (공휴일은 모름 → 연휴엔 '오래됨'이 하루 이틀 일찍 뜰 수 있음)."""
+    last = last.date() if hasattr(last, "date") else last
+    return sum(1 for k in range(1, (today - last).days + 1) if (last + timedelta(days=k)).weekday() < 5)
+
+
+def market_freshness(last, today: date, max_business_days: int = 2) -> str:
+    """시장 전체 일별 지표용: 원천이 하루 늦게 올라오므로 평일 2일까지는 OK."""
+    if last is None:
+        return "없음"
+    n = business_days_since(last, today)
+    return "OK" if n <= max_business_days else f"오래됨({n}영업일 전)"
 
 
 def freshness(last, today: date, max_age: int) -> str:
@@ -153,6 +167,9 @@ def collect(conn, today: date | None = None, opinion_conn=None, opinion_configur
           "FROM core.feature_snapshot WHERE as_of = (SELECT max(as_of) FROM core.feature_snapshot) GROUP BY company_id",
           ("feature_as_of", "features_filled", "features_total"))
     out["companies"] = list(per.values())
+    r = _q(conn, "SELECT count(*), max(bas_dt), max(collected_at) FROM core.credit_balance")
+    out["market_indicators"] = [{"label": "신용공여 잔고(시장 전체)", "rows": r[0][0], "last_date": r[0][1],
+                                 "last_collected": r[0][2]}] if r else []
     out["new_collections"] = []
     for tbl, label, dcol, freq in NEW_TABLES:
         r = _q(conn, f"SELECT count(*), count(DISTINCT company_id), {f'max({dcol})' if dcol else 'NULL'}, max(collected_at) FROM {tbl}")
@@ -251,6 +268,9 @@ def render(st: dict) -> str:
                      f"수집 {_s(got)}  {freshness(got, today, FRESH_DAYS[t['freq']])}")
     if not st.get("new_collections"):
         lines.append("  없음 (표가 없거나 아직 수집 전)")
+    lines += ["", "[시장 지표] (시장 전체 합계, 종목별 아님; 최신성은 평일 2일 기준)"]
+    lines += [f"  {m['label']:<20}{m['rows']:>6}행  최신 기준일 {_s(m['last_date'])}  "
+              f"{market_freshness(m['last_date'], today)}" for m in st.get("market_indicators", [])] or ["  없음 (collect-credit-balance)"]
     lines += ["", "[시장 지수]"]
     lines += [f"  {i['symbol']:<7}{(i['name'] or ''):<14}{i['rows']:>5}행 {i['from']}~{i['to']}  "
               f"{freshness(i['to'], today, FRESH_DAYS['index'])}" for i in st["indices"]] or ["  없음 (collect-indices)"]

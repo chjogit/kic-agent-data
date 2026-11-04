@@ -36,6 +36,7 @@
   collect-finnhub  해외 종목 영문 뉴스 (Finnhub, FINNHUB_API_KEY 있을 때만)
   collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-investor-flows  국내 종목 투자자별(외국인·기관·개인) 일별 순매수 (네이버 증권 공개 API)
+  collect-credit-balance  신용공여 잔고(시장 전체, 종목별 아님; 금융투자협회 종합통계)
   collect-audit-opinion  감사의견 구분·강조사항·계속기업 (DART 정형 API)
   collect-ownership  지분공시: 대량보유상황보고·최대주주 지분율 (DART 정형 API)
   collect-financial-items  감가상각·이자비용 항목 매핑 (DART 전체 재무제표)
@@ -56,7 +57,7 @@ import time
 from datetime import date, timedelta
 
 from . import db, features, krx_sector, pulse, quarterly, rag, sentiment, status
-from .collectors import (community, customs, dart, etf, finnhub, fsc, fsc_bond, indices, investor_flow, kospi200, lending, macro,
+from .collectors import (kofia_credit, community, customs, dart, etf, finnhub, fsc, fsc_bond, indices, investor_flow, kospi200, lending, macro,
                          news, sec, trends, us_prices, youtube)
 from .config import env
 from .http_util import make_session
@@ -1092,6 +1093,52 @@ def cmd_bond_issue(args) -> int:
     return 1 if bad else 0
 
 
+def cmd_credit_balance(args) -> int:
+    """신용공여 잔고(시장 전체, 종목별 아님): 마지막 저장일 다음 날부터 오늘까지(처음엔 --days 일)."""
+    s = make_session()
+    with db.connect() as conn:
+        last = db.credit_balance_last(conn)
+        conn.commit()
+        begin = (last + timedelta(days=1)) if last else date.today() - timedelta(days=args.days)
+        if getattr(args, "backfill", False):   # 과거분 보충: 오늘 - days 부터 다시(기준일 PK 로 중복은 갱신만), 한 번에 1년씩
+            begin = date.today() - timedelta(days=args.days)
+        if begin > date.today():
+            _ok("신용공여 잔고", "새로 받을 날짜 없음")
+            return 0
+        try:
+            rows, cur = [], begin
+            while cur <= date.today():
+                stop = min(cur + timedelta(days=359), date.today()) if getattr(args, "backfill", False) else date.today()
+                rows += kofia_credit.fetch_range(s, ymd(cur), ymd(stop))
+                cur = stop + timedelta(days=1)
+        except kofia_credit.AuthSkipped as exc:
+            print(f"[WARN] 신용공여 잔고 키가 아직 이 서비스에 승인·적용되지 않음 → 이번 실행은 건너뜀 ({exc})")
+            return 0
+        except RuntimeError as exc:
+            _fail("신용공여 잔고", str(exc))
+            return 1
+        n = db.save_credit_balance(conn, rows)
+    _ok("신용공여 잔고", f"{n}일 ({ymd(begin)}~{ymd(date.today())})")
+    return 0
+
+
+def cmd_probe_credit_balance(args) -> int:
+    """신용공여 잔고 원 응답 확인 (DB 에 쓰지 않음, 엔드포인트·필드 이름·단위 확인용)."""
+    import json
+
+    s = make_session()
+    end = date.today()
+    payload = kofia_credit.fetch_raw(s, ymd(end - timedelta(days=args.days)), ymd(end), rows=args.rows)
+    print(json.dumps(payload, ensure_ascii=False, indent=1)[:args.max_chars])
+    try:
+        rows, total = kofia_credit.parse_items(payload)
+        print(f"→ 해석 {len(rows)}행 / 전체 {total}")
+        for r in rows[:args.rows]:
+            print({k: v for k, v in r.items() if k != "raw"})
+    except RuntimeError as exc:
+        print("해석 불가:", exc)
+    return 0
+
 def cmd_ownership(args) -> int:
     """지분공시 정형화: 대량보유상황보고(보고자·지분율·사유)와 최대주주 및 특수관계인 지분율 (DART 정형 API)."""
     s = make_session()
@@ -2001,6 +2048,15 @@ def main(argv=None) -> int:
     a = sub.add_parser("collect-bond-issue", help="회사채 발행 종목: 표면이율·고정/변동·만기 (금융위원회_채권발행정보)")
     a.add_argument("--bas-dt", default=None, help="기준일자 YYYYMMDD (기본: 없음 = 발행 종목 전체. 주면 0건인 경우가 많음)")
     a.set_defaults(fn=cmd_bond_issue)
+    a = sub.add_parser("collect-credit-balance", help="신용공여 잔고(시장 전체, 종목별 아님; 금융투자협회 종합통계)")
+    a.add_argument("--days", type=int, default=400, help="처음 받을 때 거슬러 올라갈 일수")
+    a.add_argument("--backfill", action="store_true", help="저장돼 있어도 오늘-days 부터 다시 받아 빠진 과거분을 채움(1년씩 나눠 요청)")
+    a.set_defaults(fn=cmd_credit_balance)
+    a = sub.add_parser("probe-credit-balance", help="신용공여 잔고 원 응답 확인 (DB 에 쓰지 않음)")
+    a.add_argument("--days", type=int, default=10)
+    a.add_argument("--rows", type=int, default=5)
+    a.add_argument("--max-chars", type=int, default=3000)
+    a.set_defaults(fn=cmd_probe_credit_balance)
     a = sub.add_parser("collect-ownership", help="지분공시: 대량보유상황보고·최대주주 지분율 (DART 정형 API)")
     a.add_argument("--years", type=int, default=3, help="최대주주 현황을 받을 사업연도 수 (전년도부터)")
     a.set_defaults(fn=cmd_ownership)

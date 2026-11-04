@@ -50,3 +50,8 @@ def test_datasets_use_known_freshness_keys():
 def test_new_collection_jobs_map_to_dart():
     for name in ("disclosures-ownership", "backfill-disclosures-ownership", "ownership", "audit-opinion", "financial-items"):
         assert quality.API_OF_JOB[name] == "dart"
+
+
+def test_credit_balance_maps_to_data_go_kr_and_skip_is_not_red():
+    assert quality.API_OF_JOB["credit-balance"] == "data.go.kr"
+    assert not quality.quota_hit("[WARN] 신용공여 잔고 키가 아직 이 서비스에 승인·적용되지 않음 → 이번 실행은 건너뜀 (SERVICE KEY IS NOT REGISTERED)")

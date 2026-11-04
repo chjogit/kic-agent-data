@@ -21,7 +21,7 @@ API_OF_JOB = {
     "ownership": "dart", "audit-opinion": "dart", "financial-items": "dart",
     "sec-annual": "sec", "sec-quarterly": "sec",
     "backfill-kr-prices": "fsc", "kr-prices": "fsc", "backfill-etf": "fsc", "etf-prices": "fsc",
-    "lending": "data.go.kr", "bond-issue": "data.go.kr", "backfill-customs": "data.go.kr", "customs": "data.go.kr",
+    "lending": "data.go.kr", "bond-issue": "data.go.kr", "credit-balance": "data.go.kr", "backfill-customs": "data.go.kr", "customs": "data.go.kr",
     "backfill-us-prices": "yfinance", "us-prices": "yfinance", "backfill-indices": "yfinance", "indices": "yfinance", "us-etf-prices": "yfinance",
     "backfill-macro": "ecos·fred", "macro": "ecos·fred",
     "backfill-news": "naver", "backfill-news-gaps": "naver", "backfill-person-news": "naver", "backfill-community-gaps": "naver", "news": "naver", "backfill-community": "naver", "backfill-blog-deep": "naver", "community": "naver", "mentions": "naver",
