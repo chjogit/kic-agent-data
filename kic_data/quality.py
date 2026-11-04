@@ -300,4 +300,8 @@ def data_status(conn, today=None, opinion_conn=None, opinion_configured: bool | 
     return {"checked_at": today, "master": master, "datasets": datasets, "indices": indices,
             "macro": macro, "macro_stale": sum(m["freshness"] != "OK" for m in macro),
             "documents": st["documents"], "disclosures": st["disclosures"],
+            "new_collections": [{**t, "freshness": None if t.get("error") else status.freshness(
+                t["last_collected"], today, status.FRESH_DAYS[t["freq"]])} for t in st.get("new_collections", [])],
+            "market_indicators": [{**m, "freshness": None if m.get("error") else status.market_freshness(m["last_date"], today)}
+                                  for m in st.get("market_indicators", [])],
             "peer_groups": len(st["peer_groups"])}

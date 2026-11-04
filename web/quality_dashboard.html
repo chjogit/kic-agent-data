@@ -274,12 +274,14 @@ async function loadData() {
       <td>${esc(x.source)}</td><td>${esc(x.category||'')}</td><td class="num">${num(x.rows)}</td>
       <td class="num">${num(x.unclassified)}</td><td>${ts(x.from)} ~ ${ts(x.to)}</td></tr>`))}
     <h3 class="sub">새 수집 (지분공시·최대주주·감사의견·재무 항목; 주 1회 작업)</h3>
-    ${table(['표', {t:'행', num:1}, {t:'종목', num:1}, '기준일', '마지막 수집'], (d.new_collections||[]).map(x => `<tr>
-      <td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td class="num">${num(x.companies)}</td>
-      <td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td></tr>`))}
-    <h3 class="sub">시장 지표 (시장 전체 합계, 종목별 아님)</h3>
-    ${table(['지표', {t:'행', num:1}, '최신 기준일', '마지막 수집'], (d.market_indicators||[]).map(x => `<tr>
-      <td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td></tr>`))}
+    ${table(['표', {t:'행', num:1}, {t:'종목', num:1}, '기준일', '마지막 수집', '최신성'], (d.new_collections||[]).map(x => x.error
+      ? `<tr><td>${esc(x.label)}</td><td colspan="5" style="color:var(--bad,#c00);">조회 실패: ${esc(x.error)}</td></tr>`
+      : `<tr><td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td class="num">${num(x.companies)}</td>
+      <td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td><td>${esc(x.freshness||'')}</td></tr>`))}
+    <h3 class="sub">시장 지표 (시장 전체 합계, 종목별 아님; 최신성은 평일 2일 기준)</h3>
+    ${table(['지표', {t:'행', num:1}, '최신 기준일', '마지막 수집', '최신성'], (d.market_indicators||[]).map(x => x.error
+      ? `<tr><td>${esc(x.label)}</td><td colspan="4" style="color:var(--bad,#c00);">조회 실패: ${esc(x.error)}</td></tr>`
+      : `<tr><td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td><td>${esc(x.freshness||'')}</td></tr>`))}
   `;
 }
 

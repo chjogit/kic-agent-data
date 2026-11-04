@@ -55,3 +55,37 @@ def test_new_collection_jobs_map_to_dart():
 def test_credit_balance_maps_to_data_go_kr_and_skip_is_not_red():
     assert quality.API_OF_JOB["credit-balance"] == "data.go.kr"
     assert not quality.quota_hit("[WARN] 신용공여 잔고 키가 아직 이 서비스에 승인·적용되지 않음 → 이번 실행은 건너뜀 (SERVICE KEY IS NOT REGISTERED)")
+
+
+class _FakeCur:
+    def __init__(self, fail): self.fail, self.sql = fail, ""
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, sql, params=None):
+        self.sql = sql
+        if self.fail(sql):
+            raise RuntimeError("permission denied for table x\nDETAIL secret")
+    def fetchall(self): return [(5, 3, None, datetime(2026, 11, 3, 3, 0))] if "max(collected_at)" in self.sql else []
+
+
+class _FakeConn:
+    def __init__(self, fail): self.fail, self.rolled = fail, 0
+    def cursor(self): return _FakeCur(self.fail)
+    def rollback(self): self.rolled += 1
+
+
+def test_data_status_passes_new_sections_and_shows_query_errors(monkeypatch):
+    from datetime import date
+
+    from kic_data import status
+    monkeypatch.setattr(status, "NEW_TABLES", (("core.a", "표A", None, "weekly"), ("core.b", "표B", None, "weekly")))
+    conn = _FakeConn(lambda sql: "core.b" in sql or "credit_balance" in sql)      # 표B·신용공여만 조회 실패
+    st = status.collect(conn, date(2026, 11, 4))
+    a, b = st["new_collections"]
+    assert a["rows"] == 5 and a["error"] is None and b["rows"] is None and b["error"].startswith("RuntimeError: permission denied")
+    assert "DETAIL" not in b["error"] and conn.rolled >= 2                         # 첫 줄만, 롤백함
+    assert st["market_indicators"][0]["error"]
+    out = quality.data_status(conn, date(2026, 11, 4))
+    assert out["new_collections"][0]["freshness"] == "OK" and out["new_collections"][1]["error"]
+    assert out["market_indicators"][0]["freshness"] is None
+    assert "조회 실패" in status.render(st)
