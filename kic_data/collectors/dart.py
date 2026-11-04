@@ -219,6 +219,8 @@ EVENT_KEYWORDS = [
     ("사업보고서", "annual_report"),
     ("반기보고서", "half_year_report"),
     ("분기보고서", "quarterly_report"),
+    # --- 지분공시(D). 임원·주요주주 소유상황보고서는 event_type 을 비워 둠(기존 테스트가 None 으로 고정, category 'D' 로 구분) ---
+    ("대량보유상황보고서", "major_holding_report"),
 ]
 
 
@@ -279,3 +281,192 @@ def fetch_disclosures(session, corp_code: str | None, bgn_de: str, end_de: str, 
             break
         page += 1
     return rows
+
+
+# ---------- 지분공시 정형 응답 (대량보유상황보고 majorstock.json · 최대주주 현황 hyslrSttus.json) ----------
+def _check_status(payload: dict) -> bool:
+    """013(조회된 데이터 없음)이면 False, 다른 오류면 예외."""
+    status = payload.get("status")
+    if status == "013":
+        return False
+    if status != "000":
+        raise RuntimeError(f"[dart] {status} {STATUS.get(status, payload.get('message', ''))}")
+    return True
+
+
+def _date(value) -> str | None:
+    d = re.sub(r"\D", "", value or "")
+    return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else None
+
+
+def parse_major_stock(payload: dict) -> list[dict]:
+    """주식등의 대량보유상황보고(5% 룰) 보고 한 건 = 한 행. 지분율은 % 숫자, 읽지 못하면 None."""
+    if not _check_status(payload):
+        return []
+    rows = []
+    for it in payload.get("list", []):
+        no = (it.get("rcept_no") or "").strip()
+        if not no:
+            continue
+        rows.append(
+            {
+                "rcept_no": no,
+                "rcept_dt": _date(it.get("rcept_dt")),
+                "repror": (it.get("repror") or "").strip(),
+                "report_tp": (it.get("report_tp") or "").strip() or None,
+                "report_resn": (it.get("report_resn") or "").strip() or None,
+                "stkqy": to_decimal(it.get("stkqy")),
+                "stkrt": to_decimal(it.get("stkrt")),
+                "stkrt_irds": to_decimal(it.get("stkrt_irds")),
+                "ctr_stkrt": to_decimal(it.get("ctr_stkrt")),
+                "raw": it,
+            }
+        )
+    return rows
+
+
+def fetch_major_stock(session, corp_code: str) -> list[dict]:
+    params = {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code}
+    return parse_major_stock(get_json(session, "dart", f"{BASE}/majorstock.json", params=params, limiter=_limiter))
+
+
+def parse_largest_holder(payload: dict, fiscal_year: int, report_code: str) -> list[dict]:
+    """최대주주 및 특수관계인 현황. 기말 지분율(trmend_posesn_stock_qota_rt)을 stake_rt 로 둡니다."""
+    if not _check_status(payload):
+        return []
+    rows = []
+    for it in payload.get("list", []):
+        name = (it.get("nm") or "").strip()
+        if not name:
+            continue
+        rows.append(
+            {
+                "fiscal_year": fiscal_year,
+                "report_code": report_code,
+                "holder": name,
+                "relate": (it.get("relate") or "").strip() or None,
+                "stock_kind": (it.get("stock_knd") or "").strip() or "",
+                "end_qty": to_decimal(it.get("trmend_posesn_stock_co")),
+                "stake_rt": to_decimal(it.get("trmend_posesn_stock_qota_rt")),
+                "begin_rt": to_decimal(it.get("bsis_posesn_stock_qota_rt")),
+                "settle_dt": _date(it.get("stlm_dt")),
+                "rcept_no": (it.get("rcept_no") or "").strip() or None,
+                "raw": it,
+            }
+        )
+    return rows
+
+
+def fetch_largest_holder(session, corp_code: str, fiscal_year: int, report_code: str = REPORT_ANNUAL) -> list[dict]:
+    params = {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
+              "bsns_year": str(fiscal_year), "reprt_code": report_code}
+    return parse_largest_holder(get_json(session, "dart", f"{BASE}/hyslrSttus.json", params=params, limiter=_limiter),
+                                fiscal_year, report_code)
+
+
+# ---------- 감가상각·이자비용 항목 매핑 (#36): 전체 재무제표(fnlttSinglAcntAll)의 현금흐름표·손익계산서에서 항목을 골라냄 ----------
+ITEM_SJ = ("IS", "CIS", "CF")
+
+
+def fin_item(sj_div: str, account_id: str, account_nm: str) -> str | None:
+    """계정 → 항목 이름. dep_amort 감가상각비 및 무형자산상각비(합산 계정) / depreciation 감가상각비 / rou_depreciation 사용권자산상각비 / amortization 무형자산상각비 /
+    interest_expense 이자비용 / finance_costs 금융비용(이자 외 외환손실 등 포함) / interest_paid 이자지급(현금흐름).
+    표준계정 ID 를 우선하고, 없으면 계정명 변형으로 찾습니다. 상각후원가 금융자산처럼 이름만 비슷한 계정은 제외."""
+    if sj_div not in ITEM_SJ:
+        return None
+    a, n = account_id or "", re.sub(r"\s+", "", account_nm or "")
+    if a.endswith("DepreciationAndAmortisationExpense") or n in ("감가상각비및무형자산상각비", "감가상각비와무형자산상각비"):
+        return "dep_amort"
+    if "DepreciationRightofuse" in a or ("사용권자산" in n and "상각" in n and "취득" not in n and "처분" not in n):
+        return "rou_depreciation"
+    if a.endswith("AdjustmentsForDepreciationExpense") or re.match(r"^(유형자산)?감가상각비(에대한조정|\(유형자산\))?$", n) \
+            or n in ("유형자산상각비", "유형자산감가상각비"):
+        return "depreciation"
+    if a.endswith("AdjustmentsForAmortisationExpense") or n.startswith("무형자산상각비"):
+        return "amortization"
+    if re.search(r"(^|_)(AdjustmentsForInterestExpenses?|InterestExpense|InterestExpenseFinanceExpense)$", a) or n in ("이자비용", "이자비용(금융비용)", "이자비용조정"):
+        return "interest_expense"
+    if a == "ifrs-full_FinanceCosts" or n in ("금융비용", "금융원가"):
+        return "finance_costs"
+    if a.startswith("ifrs-full_InterestPaid") or n in ("이자의지급", "이자지급", "이자지급(영업)"):
+        return "interest_paid"
+    return None
+
+
+def extract_fin_items(rows: list[dict]) -> list[dict]:
+    """parse_financials 결과 중 위 항목에 해당하고 금액이 있는 행만 (같은 항목이 IS·CF 에 중복돼도 둘 다 둠)."""
+    out = []
+    for r in rows:
+        item = fin_item(r["sj_div"], r["account_id"], r["account_nm"])
+        if item and r["amount"] is not None:
+            out.append({"fiscal_year": r["fiscal_year"], "report_code": r["report_code"], "fs_div": r["fs_div"], "item": item,
+                        "sj_div": r["sj_div"], "account_id": r["account_id"], "account_nm": r["account_nm"],
+                        "amount": r["amount"], "rcept_no": r["rcept_no"]})
+    return out
+
+
+# ---------- 감사의견 (accnutAdtorNmNdAdtOpinion.json: 회계감사인의 명칭 및 감사의견) ----------
+NO_MATTER = {"", "-", "해당사항 없음", "해당 사항 없음", "해당사항없음", "없음"}
+
+
+def classify_opinion(text: str | None) -> str:
+    """감사의견 원문 → unqualified(적정) / qualified(한정) / adverse(부적정) / disclaimer(의견거절) / unknown(미확인).
+    '부적정'에 '적정'이 들어 있으므로 부정 쪽을 먼저 봅니다."""
+    t = re.sub(r"\s+", "", text or "")
+    if "의견거절" in t:
+        return "disclaimer"
+    if "부적정" in t:
+        return "adverse"
+    if "한정" in t:
+        return "qualified"
+    if "적정" in t:
+        return "unqualified"
+    return "unknown"
+
+
+def _matter(value) -> str | None:
+    """강조사항 등 문장. 필드가 없으면 None(미확인), '해당사항 없음' 류는 빈 문자열(없음 확정)."""
+    if value is None:
+        return None
+    t = re.sub(r"\s+", " ", str(value)).strip()
+    return "" if t in NO_MATTER else t
+
+
+def parse_audit_opinion(payload: dict) -> list[dict]:
+    """감사의견 행 목록. 한 접수번호에 당기·전기·(전전기)와 연결·별도 행이 섞여 오므로 순서(seq)를 함께 둡니다.
+    계속기업 불확실성은 강조사항·감사보고서 특기사항 문장에 '계속기업'이 있는지로만 판단하고, 필드가 없으면 None."""
+    if not _check_status(payload):
+        return []
+    rows = []
+    for seq, it in enumerate(payload.get("list", [])):
+        no = (it.get("rcept_no") or "").strip()
+        stlm = _date(it.get("stlm_dt"))
+        if not no or not stlm:
+            continue
+        emphasis, special = _matter(it.get("emphs_matter")), _matter(it.get("adt_reprt_spcmnt_matter"))
+        texts = [x for x in (emphasis, special) if x]
+        known = emphasis is not None or special is not None
+        rows.append(
+            {
+                "rcept_no": no,
+                "seq": seq,
+                "settle_dt": stlm,
+                "fiscal_year": int(stlm[:4]),
+                "period_label": re.sub(r"\s+", "", (it.get("bsns_year") or "")),
+                "auditor": (it.get("adtor") or "").strip() or None,
+                "opinion_raw": (it.get("adt_opinion") or "").strip() or None,
+                "opinion_class": classify_opinion(it.get("adt_opinion")),
+                "emphasis": emphasis,
+                "core_matter": _matter(it.get("core_adt_matter")),
+                "has_emphasis": bool(texts) if known else None,
+                "going_concern": any("계속기업" in x for x in texts) if known else None,
+                "raw": it,
+            }
+        )
+    return rows
+
+
+def fetch_audit_opinion(session, corp_code: str, fiscal_year: int, report_code: str = REPORT_ANNUAL) -> list[dict]:
+    params = {"crtfc_key": env("DART_API_KEY", required=True), "corp_code": corp_code,
+              "bsns_year": str(fiscal_year), "reprt_code": report_code}
+    return parse_audit_opinion(get_json(session, "dart", f"{BASE}/accnutAdtorNmNdAdtOpinion.json", params=params, limiter=_limiter))

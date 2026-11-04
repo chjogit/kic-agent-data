@@ -1199,6 +1199,73 @@ def save_bond_issues(conn, company_id: int, rows: list[dict]) -> int:
     return len(rows)
 
 
+def save_ownership_reports(conn, company_id: int, rows: list[dict]) -> int:
+    """대량보유상황보고: 접수번호·보고자가 같으면 갱신 (정정 보고는 접수번호가 달라 새 행)."""
+    import json
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO core.ownership_report (company_id, rcept_no, repror, rcept_dt, report_tp, report_resn, stkqy, stkrt, "
+            "stkrt_irds, ctr_stkrt, raw) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+            "ON CONFLICT (company_id, rcept_no, repror) DO UPDATE SET rcept_dt=EXCLUDED.rcept_dt, report_tp=EXCLUDED.report_tp, "
+            "report_resn=EXCLUDED.report_resn, stkqy=EXCLUDED.stkqy, stkrt=EXCLUDED.stkrt, stkrt_irds=EXCLUDED.stkrt_irds, "
+            "ctr_stkrt=EXCLUDED.ctr_stkrt, raw=EXCLUDED.raw, collected_at=now()",
+            [[company_id, r["rcept_no"], r["repror"], r["rcept_dt"], r["report_tp"], r["report_resn"], r["stkqy"], r["stkrt"],
+              r["stkrt_irds"], r["ctr_stkrt"], json.dumps(r["raw"], ensure_ascii=False, default=str)] for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def save_largest_holders(conn, company_id: int, rows: list[dict]) -> int:
+    import json
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO core.largest_holder (company_id, fiscal_year, report_code, holder, stock_kind, relate, end_qty, stake_rt, "
+            "begin_rt, settle_dt, rcept_no, raw) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+            "ON CONFLICT (company_id, fiscal_year, report_code, holder, stock_kind) DO UPDATE SET relate=EXCLUDED.relate, "
+            "end_qty=EXCLUDED.end_qty, stake_rt=EXCLUDED.stake_rt, begin_rt=EXCLUDED.begin_rt, settle_dt=EXCLUDED.settle_dt, "
+            "rcept_no=EXCLUDED.rcept_no, raw=EXCLUDED.raw, collected_at=now()",
+            [[company_id, r["fiscal_year"], r["report_code"], r["holder"], r["stock_kind"], r["relate"], r["end_qty"], r["stake_rt"],
+              r["begin_rt"], r["settle_dt"], r["rcept_no"], json.dumps(r["raw"], ensure_ascii=False, default=str)] for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def save_financial_items(conn, company_id: int, rows: list[dict]) -> int:
+    """회사·연도·재무제표 구분 단위로 통째로 교체 (매핑을 고치면 남는 옛 항목이 없게). core.financial_fact 는 건드리지 않음."""
+    keys = {(r["fiscal_year"], r["report_code"], r["fs_div"]) for r in rows}
+    with conn.cursor() as cur:
+        for fy, code, fs in keys:
+            cur.execute("DELETE FROM core.financial_item WHERE company_id = %s AND fiscal_year = %s AND report_code = %s "
+                        "AND fs_div = %s", [company_id, fy, code, fs])
+        cur.executemany(
+            "INSERT INTO core.financial_item (company_id, fiscal_year, report_code, fs_div, item, sj_div, account_id, account_nm, "
+            "amount, rcept_no) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            [[company_id, r["fiscal_year"], r["report_code"], r["fs_div"], r["item"], r["sj_div"], r["account_id"], r["account_nm"],
+              r["amount"], r["rcept_no"]] for r in rows])
+    conn.commit()
+    return len(rows)
+
+
+def save_audit_opinions(conn, company_id: int, rows: list[dict]) -> int:
+    """접수번호 단위로 통째로 교체 (정정 보고로 행 수가 바뀌어도 남는 행이 없게)."""
+    import json
+
+    with conn.cursor() as cur:
+        for no in {r["rcept_no"] for r in rows}:
+            cur.execute("DELETE FROM core.audit_opinion WHERE company_id = %s AND rcept_no = %s", [company_id, no])
+        cur.executemany(
+            "INSERT INTO core.audit_opinion (company_id, rcept_no, seq, settle_dt, fiscal_year, period_label, auditor, opinion_raw, "
+            "opinion_class, emphasis, core_matter, has_emphasis, going_concern, raw) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            [[company_id, r["rcept_no"], r["seq"], r["settle_dt"], r["fiscal_year"], r["period_label"], r["auditor"],
+              r["opinion_raw"], r["opinion_class"], r["emphasis"], r["core_matter"], r["has_emphasis"], r["going_concern"],
+              json.dumps(r["raw"], ensure_ascii=False, default=str)] for r in rows])
+    conn.commit()
+    return len(rows)
+
+
 def save_credit_balance(conn, rows: list[dict]) -> int:
     import json
 

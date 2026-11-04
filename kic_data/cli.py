@@ -37,6 +37,9 @@
   collect-youtube  유튜브 공개 영상·통계·공개 댓글 (YOUTUBE_API_KEY 있을 때만)
   collect-investor-flows  국내 종목 투자자별(외국인·기관·개인) 일별 순매수 (네이버 증권 공개 API)
   collect-credit-balance  신용공여 잔고(시장 전체, 종목별 아님; 금융투자협회 종합통계)
+  collect-audit-opinion  감사의견 구분·강조사항·계속기업 (DART 정형 API)
+  collect-ownership  지분공시: 대량보유상황보고·최대주주 지분율 (DART 정형 API)
+  collect-financial-items  감가상각·이자비용 항목 매핑 (DART 전체 재무제표)
   collect-lending  코스피 종목별 일별 주식 대차거래·잔고 (금융위원회 주식대차거래정보, 공매도 대용)
   collect-bond-issue  회사채 발행 종목: 표면이율·고정/변동·만기 (금융위원회 채권발행정보)
   collect-kr-prices / collect-us-prices / collect-dart / collect-sec / collect-macro
@@ -493,7 +496,7 @@ def cmd_disclosures(args) -> int:
                 rows = dart.fetch_disclosures(s, corp_code, ymd(since), ymd(date.today()), ty)
                 total += db.upsert_disclosures(conn, cid, rows, "dart")
             _ok(f"KR:{ticker}", f"{total}건 (유형 {','.join(types)})")
-        for cid, ticker, name, _, cik in db.list_companies(conn, "US"):
+        for cid, ticker, name, _, cik in ([] if set(types) <= {"D"} else db.list_companies(conn, "US")):   # D(지분공시)는 DART 전용
             if not cik:
                 tmap = tmap or sec.fetch_ticker_map(s)
                 cik = tmap.get(ticker.upper())
@@ -1135,6 +1138,112 @@ def cmd_probe_credit_balance(args) -> int:
     except RuntimeError as exc:
         print("해석 불가:", exc)
     return 0
+
+def cmd_ownership(args) -> int:
+    """지분공시 정형화: 대량보유상황보고(보고자·지분율·사유)와 최대주주 및 특수관계인 지분율 (DART 정형 API)."""
+    s = make_session()
+    bad = rows_n = holder_n = 0
+    years = [date.today().year - k for k in range(1, args.years + 1)]   # 사업보고서는 이듬해 3월 제출 → 전년도부터
+    with db.connect() as conn:
+        for cid, ticker, _, corp_code, _ in db.list_companies(conn, "KR"):
+            if not corp_code:
+                print(f"[WARN] {ticker} corp_code 없음 → sync-dart-codes 먼저")
+                continue
+            try:
+                reports = dart.fetch_major_stock(s, corp_code)
+                holders = [r for y in years for r in dart.fetch_largest_holder(s, corp_code, y)]
+            except RuntimeError as exc:
+                _fail(f"KR:{ticker}", f"지분공시: {exc}")
+                bad += 1
+                if re.search(r"\[dart\] (010|011|020)", str(exc)):   # 키 오류·요청 한도 초과면 나머지도 같으므로 멈춤
+                    break
+                continue
+            rows_n += db.save_ownership_reports(conn, cid, reports)
+            holder_n += db.save_largest_holders(conn, cid, holders)
+            _ok(f"KR:{ticker}", f"대량보유 {len(reports)}건, 최대주주 {len(holders)}행")
+    print(f"[요약] 대량보유 {rows_n}건 · 최대주주 {holder_n}행 · 추정 용량 {(rows_n + holder_n) * 1.2:.0f}KB (행당 1.2KB, raw 포함)")
+    return 1 if bad else 0
+
+
+def cmd_audit_opinion(args) -> int:
+    """감사의견 구분(적정·한정·부적정·의견거절)·강조사항·계속기업 불확실성 (DART 정형 API, 최근 사업보고서 --years 개)."""
+    s = make_session()
+    bad = n = unknown = 0
+    years = [date.today().year - k for k in range(1, args.years + 1)]
+    with db.connect() as conn:
+        for cid, ticker, _, corp_code, _ in db.list_companies(conn, "KR"):
+            if not corp_code:
+                print(f"[WARN] {ticker} corp_code 없음 → sync-dart-codes 먼저")
+                continue
+            try:
+                rows = [r for y in years for r in dart.fetch_audit_opinion(s, corp_code, y)]
+            except RuntimeError as exc:
+                _fail(f"KR:{ticker}", f"감사의견: {exc}")
+                bad += 1
+                if re.search(r"\[dart\] (010|011|020)", str(exc)):   # 키 오류·요청 한도 초과면 나머지도 같으므로 멈춤
+                    break
+                continue
+            n += db.save_audit_opinions(conn, cid, rows)
+            unknown += sum(1 for r in rows if r["opinion_class"] == "unknown")
+            _ok(f"KR:{ticker}", f"감사의견 {len(rows)}행 (미확인 {sum(1 for r in rows if r['opinion_class'] == 'unknown')})")
+    print(f"[요약] 감사의견 {n}행 · 미확인 {unknown}행 · 추정 용량 {n * 1.5:.0f}KB (행당 1.5KB, raw 포함)")
+    return 1 if bad else 0
+
+
+def cmd_probe_ownership(args) -> int:
+    """지분공시 원 응답을 몇 종목만 출력합니다 (DB 에 쓰지 않음, 필드 이름·단위 확인용)."""
+    import json
+
+    s = make_session()
+    want = {t.strip() for t in args.tickers.split(",") if t.strip()}
+    with db.connect() as conn:
+        companies = [c for c in db.list_companies(conn, "KR") if c[1] in want]
+        conn.commit()
+    for _, ticker, name, corp_code, _ in companies:
+        print(f"\n##### {ticker} {name}")
+        for label, rows in (("대량보유", lambda: dart.fetch_major_stock(s, corp_code)),
+                            ("최대주주", lambda: dart.fetch_largest_holder(s, corp_code, date.today().year - 1))):
+            try:
+                got = rows()
+            except RuntimeError as exc:
+                print(label, "오류:", exc)
+                continue
+            print(f"{label}: {len(got)}행")
+            for r in got[:args.rows]:
+                print(json.dumps({k: v for k, v in r.items() if k != "raw"}, ensure_ascii=False, default=str))
+
+
+def cmd_financial_items(args) -> int:
+    """감가상각·이자비용 항목: 전체 재무제표(연결, 없으면 별도)에서 항목 매핑으로 골라 core.financial_item 에 (최근 --years 개 사업연도)."""
+    s = make_session()
+    bad = n = 0
+    seen: dict[str, int] = {}
+    years = [date.today().year - k for k in range(1, args.years + 1)]
+    with db.connect() as conn:
+        for cid, ticker, _, corp_code, _ in db.list_companies(conn, "KR"):
+            if not corp_code:
+                print(f"[WARN] {ticker} corp_code 없음 → sync-dart-codes 먼저")
+                continue
+            try:
+                rows = []
+                for y in years:
+                    for fs in ("CFS", "OFS"):
+                        part = dart.extract_fin_items(dart.fetch_financials(s, corp_code, y, fs_div=fs))
+                        if part:
+                            rows += part
+                            break
+            except RuntimeError as exc:
+                _fail(f"KR:{ticker}", f"재무 항목: {exc}")
+                bad += 1
+                if re.search(r"\[dart\] (010|011|020)", str(exc)):   # 키 오류·요청 한도 초과면 나머지도 같으므로 멈춤
+                    break
+                continue
+            n += db.save_financial_items(conn, cid, rows)
+            for it in {r["item"] for r in rows}:
+                seen[it] = seen.get(it, 0) + 1
+            _ok(f"KR:{ticker}", f"항목 {len(rows)}행 ({','.join(sorted({r['item'] for r in rows})) or '없음'})")
+    print(f"[요약] 항목 {n}행 · 회사 수(항목별) {dict(sorted(seen.items()))} · 추정 용량 {n * 0.3:.0f}KB")
+    return 1 if bad else 0
 
 
 def cmd_probe_bond_issue(args) -> int:
@@ -1948,6 +2057,19 @@ def main(argv=None) -> int:
     a.add_argument("--rows", type=int, default=5)
     a.add_argument("--max-chars", type=int, default=3000)
     a.set_defaults(fn=cmd_probe_credit_balance)
+    a = sub.add_parser("collect-ownership", help="지분공시: 대량보유상황보고·최대주주 지분율 (DART 정형 API)")
+    a.add_argument("--years", type=int, default=3, help="최대주주 현황을 받을 사업연도 수 (전년도부터)")
+    a.set_defaults(fn=cmd_ownership)
+    a = sub.add_parser("collect-audit-opinion", help="감사의견 구분·강조사항·계속기업 불확실성 (DART 정형 API)")
+    a.add_argument("--years", type=int, default=2, help="받을 사업연도 수 (전년도부터; 각 사업보고서에 전기분도 들어 있음)")
+    a.set_defaults(fn=cmd_audit_opinion)
+    a = sub.add_parser("probe-ownership", help="지분공시 원 응답 확인 (DB 에 쓰지 않음)")
+    a.add_argument("--tickers", default="005930,005380,000660")
+    a.add_argument("--rows", type=int, default=3)
+    a.set_defaults(fn=cmd_probe_ownership)
+    a = sub.add_parser("collect-financial-items", help="감가상각·이자비용 항목 매핑 (DART 전체 재무제표 → core.financial_item)")
+    a.add_argument("--years", type=int, default=2, help="받을 사업연도 수 (전년도부터)")
+    a.set_defaults(fn=cmd_financial_items)
     a = sub.add_parser("probe-bond-issue", help="채권발행정보 원 응답 확인 (DB 에 쓰지 않음)")
     a.add_argument("--tickers", default="005930,005380,007070,034020,015760")
     a.add_argument("--bas-dt", default=None)

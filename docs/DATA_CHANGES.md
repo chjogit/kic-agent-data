@@ -14,6 +14,20 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 - **변경**: 새 표 `core.credit_balance`(bas_dt, loan_total, fields jsonb, raw jsonb) — 공공데이터포털 금융위원회_금융투자협회종합통계정보의 신용공여 잔고 추이. **시장 전체 합계이며 종목별이 아님.** 작업 `credit-balance` 매일(키 `DATA_GO_KR_KEY`/`FSC_API_KEY`). 키가 아직 서비스에 적용 전(11/4부터)이면 '건너뜀'.
 - **영향**: 기존 표·열 변화 없음. 엔드포인트·필드 이름·단위는 11/4 첫 응답 확인 전(`probe-credit-balance`)이라 숫자 칸은 `fields` 에 이름 그대로 저장.
 - **필요 조치**: 수급(에이전트 4)·심리(에이전트 6) 담당은 시장 배경 지표로만 사용(종목 비교 금지). 보고서에 '출처: 금융위원회(금융투자협회)' 표시.
+### 2026-11-03 감가상각·이자비용 항목 매핑 확대 (#36, kic-agent-data `sql/033`) — 추가만
+- **변경**: 새 표 `core.financial_item`(회사·연도·연결/별도별 감가상각·무형자산상각·사용권자산상각·합산 D&A·이자비용·금융비용·이자지급 항목)과 뷰 `core.v_ebitda_coverage`(영업이익 + 상각 = EBITDA, 영업이익 / 이자비용 = 이자보상배율). 작업 `financial-items` 매주. `core.financial_fact` 는 변경 없음.
+- **영향**: 입력이 있을 때만 값, 없으면 NULL(미확보). 2025 사업보고서 기준 감가상각 확보 5→약 53개사, 이자비용 34→61개사(금융비용은 외환손실 등을 포함해 이자비용으로 대체하지 않음). 나머지는 현금흐름표에 상각을 따로 적지 않고 주석에만 있어 미확보.
+- **필요 조치**: 기업가치 담당은 `v_ebitda_coverage` 사용, `ebitda_complete` 가 false 면 무형자산상각 미확인(하한 근사).
+
+### 2026-11-03 감사의견 구분 정형화 (#35, kic-agent-data `sql/032`) — 추가만
+- **변경**: 새 표 `core.audit_opinion`(사업보고서별 감사인·감사의견 원문·구분 `opinion_class`(unqualified 적정/qualified 한정/adverse 부적정/disclaimer 의견거절/unknown 미확인)·강조사항·핵심감사사항·`has_emphasis`·`going_concern`)과 뷰 `core.v_audit_opinion_latest`(회사·연도별 가장 나쁜 의견). 원천은 DART `accnutAdtorNmNdAdtOpinion`. 작업 `audit-opinion` 매주.
+- **영향**: 기존 표 변화 없음. DART 가 자리표시 행('-')만 주는 회사(2025 사업보고서 기준 5개사 전부, 9개사 일부 행)는 `unknown` — 추정하지 않음. `going_concern` 은 강조사항·특기사항 문장에 '계속기업'이 있을 때만 true.
+- **필요 조치**: 재무·회계 담당은 `v_audit_opinion_latest` 사용. `unknown` 은 '확인 불가'로 표기(적정으로 간주 금지).
+
+### 2026-11-03 지분공시 수집·정형화 (#34, kic-agent-data `sql/030`) — 추가만
+- **변경**: DART 지분공시(유형 D) 목록을 `core.disclosure`(category `D`)에 추가 수집(작업 `disclosures-ownership` 매일·`backfill-disclosures-ownership` 1회). 정형 새 표 `core.ownership_report`(대량보유상황보고: 접수번호·보고자·보고일·보유 주식 수·보유 비율%·증감%p·보고 사유)와 `core.largest_holder`(최대주주 및 특수관계인: 사업연도·성명·관계·주식 종류·기말 지분율%·기초 지분율%), 뷰 `core.v_largest_holder_total`(보통주 합계). 작업 `ownership` 매주. 기존 A·B·I 수집과 표는 그대로.
+- **영향**: 기존 표·열 변화 없음. 임원·주요주주 소유보고는 `core.disclosure` 목록(`category='D'`)만 있고 지분율 정형 표는 아직 없음. 필드 이름은 DART 개발가이드 기준이라 첫 실행 후 `probe-ownership` 로 확인 필요(원 응답은 `raw` jsonb 에 보존).
+- **필요 조치**: 지배구조·경영진 담당 팀원은 `core.ownership_report`·`core.largest_holder` 를 읽기 전용으로 사용.
 
 ### 2026-11-03 새 뉴스·공시 청크 자동 임베딩 (#27, kic-agent-data)
 - **변경**: `embed-docs` 가 자동 실행기에서 하루 1회 돕니다(계산 줄, `purge-news` 다음). 청크가 없는 문서만 처리(멱등), DB 800MB 상한 유지. 새 시크릿 `UPSTAGE_API_KEY`(없으면 그 작업만 건너뜀).

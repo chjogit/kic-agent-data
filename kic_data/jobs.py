@@ -177,6 +177,16 @@ JOBS: list[Job] = [
     # ↑ 회사당 1회(약 210회/일, 키 10,000회/일). 원천은 기준일 다음 영업일 13시 이후 갱신
     Job("credit-balance", "신용공여 잔고(시장 전체, 종목별 아님)", "cmd_credit_balance", {"days": 400}, every=DAY,
         needs=DB, needs_any=DATA_GO, group="수급"),
+    Job("disclosures-ownership", "지분공시 목록(D, 시장 전체 조회)", "cmd_disclosures", {"days": 3, "types": "D", "bulk": True},
+        every=DAY, needs=DB + ("DART_API_KEY",), group="재무"),
+    Job("backfill-disclosures-ownership", "지분공시 목록 1년(D)", "cmd_disclosures", {"days": 365, "types": "D", "bulk": False},
+        every=ONCE, needs=DB + ("DART_API_KEY",), split=("KR",), chunk=10, group="과거분(1회)"),
+    Job("audit-opinion", "감사의견 구분·강조사항·계속기업(정형)", "cmd_audit_opinion", {"years": 2}, every=WEEK,
+        needs=DB + ("DART_API_KEY",), group="재무"),
+    Job("ownership", "대량보유상황보고·최대주주 지분율(정형)", "cmd_ownership", {"years": 3}, every=WEEK,
+        needs=DB + ("DART_API_KEY",), group="재무"),
+    Job("financial-items", "감가상각·이자비용 항목 매핑(EBITDA·이자보상배율 입력)", "cmd_financial_items", {"years": 2}, every=WEEK,
+        needs=DB + ("DART_API_KEY",), group="재무"),
     Job("customs", "관세청 반도체 수출입", "cmd_customs", {"from_ym": _ym_ago(13), "hs": HS_SEMI}, every=DAY,
         needs=DB, needs_any=DATA_GO),  # 월 단위 자료(매월 중순 전월분 갱신)라 하루 1회
     Job("sentiment", "감성 점수", "cmd_sentiment", {"method": None, "limit": None, "rescore": False}, needs=DB),

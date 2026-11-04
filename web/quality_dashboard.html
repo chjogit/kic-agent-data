@@ -273,6 +273,13 @@ async function loadData() {
     ${table(['출처', '유형', {t:'건수', num:1}, {t:'미분류', num:1}, '기간'], d.disclosures.map(x => `<tr>
       <td>${esc(x.source)}</td><td>${esc(x.category||'')}</td><td class="num">${num(x.rows)}</td>
       <td class="num">${num(x.unclassified)}</td><td>${ts(x.from)} ~ ${ts(x.to)}</td></tr>`))}
+    <h3 class="sub">새 수집 (지분공시·최대주주·감사의견·재무 항목; 주 1회 작업)</h3>
+    ${table(['표', {t:'행', num:1}, {t:'종목', num:1}, '기준일', '마지막 수집'], (d.new_collections||[]).map(x => `<tr>
+      <td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td class="num">${num(x.companies)}</td>
+      <td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td></tr>`))}
+    <h3 class="sub">시장 지표 (시장 전체 합계, 종목별 아님)</h3>
+    ${table(['지표', {t:'행', num:1}, '최신 기준일', '마지막 수집'], (d.market_indicators||[]).map(x => `<tr>
+      <td>${esc(x.label)}</td><td class="num">${num(x.rows)}</td><td>${ts(x.last_date)}</td><td>${ts(x.last_collected)}</td></tr>`))}
   `;
 }
 
