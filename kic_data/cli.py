@@ -1097,11 +1097,17 @@ def cmd_credit_balance(args) -> int:
         last = db.credit_balance_last(conn)
         conn.commit()
         begin = (last + timedelta(days=1)) if last else date.today() - timedelta(days=args.days)
+        if getattr(args, "backfill", False):   # 과거분 보충: 오늘 - days 부터 다시(기준일 PK 로 중복은 갱신만), 한 번에 1년씩
+            begin = date.today() - timedelta(days=args.days)
         if begin > date.today():
             _ok("신용공여 잔고", "새로 받을 날짜 없음")
             return 0
         try:
-            rows = kofia_credit.fetch_range(s, ymd(begin), ymd(date.today()))
+            rows, cur = [], begin
+            while cur <= date.today():
+                stop = min(cur + timedelta(days=359), date.today()) if getattr(args, "backfill", False) else date.today()
+                rows += kofia_credit.fetch_range(s, ymd(cur), ymd(stop))
+                cur = stop + timedelta(days=1)
         except kofia_credit.AuthSkipped as exc:
             print(f"[WARN] 신용공여 잔고 키가 아직 이 서비스에 승인·적용되지 않음 → 이번 실행은 건너뜀 ({exc})")
             return 0
@@ -1935,6 +1941,7 @@ def main(argv=None) -> int:
     a.set_defaults(fn=cmd_bond_issue)
     a = sub.add_parser("collect-credit-balance", help="신용공여 잔고(시장 전체, 종목별 아님; 금융투자협회 종합통계)")
     a.add_argument("--days", type=int, default=400, help="처음 받을 때 거슬러 올라갈 일수")
+    a.add_argument("--backfill", action="store_true", help="저장돼 있어도 오늘-days 부터 다시 받아 빠진 과거분을 채움(1년씩 나눠 요청)")
     a.set_defaults(fn=cmd_credit_balance)
     a = sub.add_parser("probe-credit-balance", help="신용공여 잔고 원 응답 확인 (DB 에 쓰지 않음)")
     a.add_argument("--days", type=int, default=10)

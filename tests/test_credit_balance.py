@@ -82,3 +82,32 @@ def test_job_registered_daily_with_data_go_key():
 def test_sql_adds_table_only():
     sql = (Path(__file__).resolve().parent.parent / "sql" / "031_credit_balance.sql").read_text(encoding="utf-8")
     assert "core.credit_balance" in sql and "DROP " not in sql.upper() and "ALTER TABLE" not in sql.upper()
+
+
+def test_backfill_requests_in_year_chunks_even_when_data_exists(monkeypatch):
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from kic_data import cli
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(cli.db, "connect", lambda: Conn())
+    monkeypatch.setattr(cli.db, "credit_balance_last", lambda conn: date.today())      # 이미 오늘까지 저장됨
+    monkeypatch.setattr(cli, "make_session", lambda: object())
+    calls = []
+    monkeypatch.setattr(kc, "fetch_range", lambda s, b, e, **k: calls.append((b, e)) or [])
+    monkeypatch.setattr(cli.db, "save_credit_balance", lambda conn, rows: len(rows))
+    assert cli.cmd_credit_balance(SimpleNamespace(days=1830, backfill=True)) == 0
+    assert len(calls) >= 5 and calls[0][0] == (date.today() - timedelta(days=1830)).strftime("%Y%m%d")
+    assert calls[-1][1] == date.today().strftime("%Y%m%d")
+    calls.clear()
+    assert cli.cmd_credit_balance(SimpleNamespace(days=1830)) == 0 and calls == []     # 옵션 없으면 새 날짜 없음
