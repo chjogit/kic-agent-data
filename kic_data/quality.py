@@ -17,6 +17,8 @@ API_OF_JOB = {
     "sync-dart-codes": "dart", "company-info": "dart", "backfill-disclosures": "dart", "disclosures": "dart",
     "backfill-dart-annual": "dart", "backfill-dart-quarterly": "dart", "backfill-dart-quarterly-5y": "dart", "dart-annual": "dart", "dart-quarterly": "dart",
     "report-exposure": "dart", "debt-terms": "dart",
+    "disclosures-ownership": "dart", "backfill-disclosures-ownership": "dart",
+    "ownership": "dart", "audit-opinion": "dart", "financial-items": "dart",
     "sec-annual": "sec", "sec-quarterly": "sec",
     "backfill-kr-prices": "fsc", "kr-prices": "fsc", "backfill-etf": "fsc", "etf-prices": "fsc",
     "lending": "data.go.kr", "bond-issue": "data.go.kr", "backfill-customs": "data.go.kr", "customs": "data.go.kr",
