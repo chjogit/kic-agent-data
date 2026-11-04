@@ -62,6 +62,7 @@
 - 메인 큰 표: `rag.chunk` 306MB, `rag.document` 46MB, `core.financial_fact` 45MB, `core.price_daily` 40MB, `core.feature_snapshot` 29MB.
 - Neon 콘솔 수치는 `pg_database_size` 보다 약 21MB 크게 보입니다(10-30 실측 차이 기준 추정).
 - `/quality` 대시보드와 GitHub Issue 알림(`alert-sync`, 매시 40분)이 용량·늦은 데이터·실행 멈춤을 알립니다.
+- 새 수집(지분공시·최대주주·감사의견·재무 항목)은 `/quality` 신호등에 DART 로 묶이고, 데이터 현황 '새 수집' 표와 `status` 출력의 `[새 수집]` 에 행·종목·기준일·마지막 수집이 나옵니다. 주 1회 작업이라 최신성은 마지막 수집 시각 10일 기준입니다.
 
 보관 기한
 

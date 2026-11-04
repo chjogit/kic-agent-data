@@ -45,3 +45,8 @@ def test_datasets_use_known_freshness_keys():
     from kic_data import status
     for name, _last, _count, fresh in quality.DATASETS:
         assert fresh is None or fresh in status.FRESH_DAYS, name
+
+
+def test_new_collection_jobs_map_to_dart():
+    for name in ("disclosures-ownership", "backfill-disclosures-ownership", "ownership", "audit-opinion", "financial-items"):
+        assert quality.API_OF_JOB[name] == "dart"

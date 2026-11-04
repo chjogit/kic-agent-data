@@ -63,3 +63,16 @@ def test_collect_records_db_usage(monkeypatch):
     monkeypatch.delenv("DB_WARN_MB", raising=False)
     st = status.collect(_Conn())
     assert st["db"]["over"] is True and st["db"]["mb"] == 920.0
+
+
+def test_new_collections_in_status_render():
+    from datetime import date, datetime
+    rows = [{"table": "core.audit_opinion", "label": "감사의견", "rows": 2502, "companies": 200,
+             "last_date": date(2026, 6, 30), "last_collected": datetime(2026, 11, 1, 3, 0), "freq": "weekly"},
+            {"table": "core.financial_item", "label": "재무 항목(감가상각·이자비용)", "rows": 1183, "companies": 90,
+             "last_date": None, "last_collected": datetime(2026, 10, 1, 3, 0), "freq": "weekly"}]
+    out = status.render({**BASE, "checked_at": "2026-11-04", "new_collections": rows})
+    assert "[새 수집]" in out and "2502행" in out
+    audit, fin = [ln for ln in out.splitlines() if "행  종목" in ln and ("감사의견" in ln or "재무 항목" in ln)]
+    assert "OK" in audit and "오래됨" in fin                      # 주 1회 작업: 11/1 수집은 OK, 10/1 은 오래됨
+    assert "아직 수집 전" in status.render(BASE)
