@@ -18,6 +18,11 @@ class InvestorFlowTest(unittest.TestCase):
         self.assertEqual(rows, [{"trade_date": date(2026, 10, 23), "foreign_net_qty": -868997, "institution_net_qty": 627670,
                                  "individual_net_qty": -61043, "foreign_hold_pct": Decimal("46.11"), "volume": 16145972}])
 
+    def test_hold_ratio_out_of_range_becomes_none(self):
+        rows = investor_flow.parse_trend([_naver(date(2026, 10, 23), hold="12345.6%"), _naver(date(2026, 10, 22), hold="-3%"),
+                                          _naver(date(2026, 10, 21), hold="100%")])
+        self.assertEqual([r["foreign_hold_pct"] for r in rows], [None, None, Decimal("100")])
+
     def test_parse_error(self):
         with self.assertRaises(RuntimeError):
             investor_flow.parse_trend({"message": "not found"})
@@ -122,16 +127,17 @@ class LendingCommandTest(unittest.TestCase):
 
 
 class InvestorFlowCommandTest(unittest.TestCase):
-    def _run(self, companies, latest, served, only_lagging=True):
+    def _run(self, companies, latest, served, only_lagging=True, max_pages=None):
         from argparse import Namespace
         from contextlib import nullcontext
 
         from kic_data import cli
 
-        asked, written = [], []
+        asked, written, pages = [], [], []
 
-        def fetch(session, ticker, since):
+        def fetch(session, ticker, since, max_pages=10):
             asked.append(ticker)
+            pages.append(max_pages)
             return [{"trade_date": d} for d in served(ticker)]
 
         with mock.patch.object(cli.db, "connect", return_value=nullcontext(None)), \
@@ -140,8 +146,17 @@ class InvestorFlowCommandTest(unittest.TestCase):
              mock.patch.object(cli.db, "upsert_investor_flows", side_effect=lambda c, cid, rows, src: written.append(cid) or len(rows)), \
              mock.patch.object(cli.investor_flow, "fetch_flows", side_effect=fetch), \
              mock.patch.object(cli, "drop_incomplete_today", side_effect=lambda rows, market: rows):
-            rc = cli.cmd_investor_flows(Namespace(days=10, only_lagging=only_lagging))
+            rc = cli.cmd_investor_flows(Namespace(days=10, only_lagging=only_lagging, max_pages=max_pages))
+        self.pages = pages
         return rc, asked, written
+
+    def test_max_pages_defaults_to_10_and_can_be_raised_for_backfill(self):
+        d0 = date(2026, 10, 28)
+        companies = [(1, "000001", "a", None, None)]
+        self._run(companies, {}, lambda t: [d0], only_lagging=False)
+        self.assertEqual(self.pages, [10])
+        self._run(companies, {}, lambda t: [d0], only_lagging=False, max_pages=20)
+        self.assertEqual(self.pages, [20])
 
     def test_only_lagging_skips_up_to_date(self):
         d0, d1 = date(2026, 10, 28), date(2026, 10, 29)
