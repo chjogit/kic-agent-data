@@ -63,3 +63,4 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 - **변경**: `rag.chunk` 의 `ix_chunk_embedding`(HNSW) 삭제 — 메인 DB 약 -197MB(773MB → 약 576MB 예상). 되돌리기 SQL 은 `sql/rollback/034_restore_chunk_hnsw.sql`. 유튜브 댓글(`youtube_comment`)도 `embed-docs` 대상에 추가(매일 `embed-docs` 에서 자동 임베딩, 14일 보관 삭제 때 청크도 함께 삭제).
 - **영향**: 벡터 검색(`ORDER BY embedding <=> ...`)은 결과는 같고 정확해지되(HNSW 는 종목 필터 뒤에 걸려 40개를 요청해도 0~21개만 돌려줬음) 종목·기준일로 먼저 거른 뒤 정렬해 약 1초 안팎입니다. 이 저장소에서 벡터 검색을 하는 코드는 OpenResearch `members/CH`(`rag_hybrid.py`)뿐입니다(JT·SH·SW 없음).
 - **필요 조치**: 벡터 검색을 새로 만드는 팀원은 쿼리에 종목(`company_id`)·기준일 조건을 꼭 넣을 것(전체 청크 정렬은 느림). 유튜브 청크는 원문 비공개 출처라 근거 청크로 쓰지 말고 번호·점수·건수만.
+- **`/quality` 경고 기준**: `DB_WARN_MB` 기본값 900 → 700(내부 한도 800MB 에 맞춤, 환경변수 `DB_WARN_MB` 로 바꿀 수 있음). 인덱스 삭제 전(773MB)에는 경고가 뜨고, 삭제 후(약 576MB)에는 뜨지 않습니다.
