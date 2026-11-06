@@ -58,3 +58,8 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 - **변경**: 거시(3)·수급(4)·투자심리·뉴스(6) 에이전트 노드(N05~N08·N11·N12). 데이터 계약은 `r4-1.3`(선택 필드만 추가: `agent.agentNos`, `claims[].tag`, `nodes[]`, `nodeSummary`, `conflicts`, `predictionSkippedReason`), 옛 출력 호환. 옛 에이전트 번호 → 새 번호 변환표(p01→3, p03→4·6).
 - **영향**: 에이전트 번호 1·3 을 기대하던 소비 코드(SW 오케스트레이터)는 `agentNos` 로 매핑. DB 스키마 변화는 없음.
 - **필요 조치**: SW — 새 번호·선택 필드 반영.
+
+### 2026-11-06 RAG 청크 HNSW 인덱스 삭제 + 유튜브 댓글 임베딩 (#68·#69, kic-agent-data `sql/034`)
+- **변경**: `rag.chunk` 의 `ix_chunk_embedding`(HNSW) 삭제 — 메인 DB 약 -197MB(773MB → 약 576MB 예상). 되돌리기 SQL 은 `sql/rollback/034_restore_chunk_hnsw.sql`. 유튜브 댓글(`youtube_comment`)도 `embed-docs` 대상에 추가(매일 `embed-docs` 에서 자동 임베딩, 14일 보관 삭제 때 청크도 함께 삭제).
+- **영향**: 벡터 검색(`ORDER BY embedding <=> ...`)은 결과는 같고 정확해지되(HNSW 는 종목 필터 뒤에 걸려 40개를 요청해도 0~21개만 돌려줬음) 종목·기준일로 먼저 거른 뒤 정렬해 약 1초 안팎입니다. 이 저장소에서 벡터 검색을 하는 코드는 OpenResearch `members/CH`(`rag_hybrid.py`)뿐입니다(JT·SH·SW 없음).
+- **필요 조치**: 벡터 검색을 새로 만드는 팀원은 쿼리에 종목(`company_id`)·기준일 조건을 꼭 넣을 것(전체 청크 정렬은 느림). 유튜브 청크는 원문 비공개 출처라 근거 청크로 쓰지 말고 번호·점수·건수만.

@@ -9,6 +9,6 @@ BEGIN
     ) AND NOT EXISTS (SELECT 1 FROM rag.chunk) THEN
         DROP INDEX IF EXISTS rag.ix_chunk_embedding;
         ALTER TABLE rag.chunk ALTER COLUMN embedding TYPE halfvec(1024);
-        CREATE INDEX ix_chunk_embedding ON rag.chunk USING hnsw (embedding halfvec_cosine_ops);
+        -- HNSW 인덱스는 만들지 않음(#69, sql/034: 용량·종목 필터 post-filter 문제). 정확 검색 사용.
     END IF;
 END $$;
