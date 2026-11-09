@@ -7,6 +7,7 @@ pyarrow 는 함수 안에서만 불러온다.
 """
 from __future__ import annotations
 
+import io
 import json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -124,7 +125,7 @@ def part_key(year: int, report_code: str) -> str:
     return assert_prefix(f"{PREFIX}fs/year={year}/report={report_code}/part-0000.parquet")
 
 
-def collect(session, companies, years, reports=REPORT_CODES, fs_divs=FS_DIVS, fetcher=None, progress=None):
+def collect(session, companies, years, reports=REPORT_CODES, fs_divs=FS_DIVS, fetcher=None, progress=None, done=None, on_part=None):
     """companies: [(corp_code, stock_code, name)]. 반환: (rows_by_part, missing, calls).
     rows_by_part: {(year, report): [행]}, missing: 013 은 reason='013', 실패는 오류 종류."""
     fetcher = fetcher or fetch
@@ -133,7 +134,14 @@ def collect(session, companies, years, reports=REPORT_CODES, fs_divs=FS_DIVS, fe
     calls = 0
     for year in years:
         for code in reports:
+            if done and (year, code) in done:   # 이어하기: 이미 끝낸 (연도, 보고서) 는 건너뜀
+                rows_d, miss_d, calls_d = done[(year, code)]
+                parts[(year, code)] = rows_d
+                missing.extend(miss_d)
+                calls += calls_d
+                continue
             parts.setdefault((year, code), [])
+            m0, c0 = len(missing), calls
             for corp_code, stock_code, _name in companies:
                 for fs_div in fs_divs:
                     calls += 1
@@ -147,6 +155,8 @@ def collect(session, companies, years, reports=REPORT_CODES, fs_divs=FS_DIVS, fe
                     if not rows:
                         missing.append({**base, "reason": "013"})
                     parts[(year, code)].extend(rows)
+            if on_part:
+                on_part(year, code, parts[(year, code)], missing[m0:], calls - c0)
             if progress:
                 progress(year, code, len(parts[(year, code)]), calls)
     return parts, missing, calls
@@ -173,6 +183,15 @@ def build_meta(parts: dict, missing: list[dict], companies, years, calls: int, n
 
 def build_files(parts: dict, meta: dict) -> dict[str, bytes]:
     files = {part_key(y, r): to_parquet_bytes(rows) for (y, r), rows in sorted(parts.items())}
+    if len(meta.get("missing", [])) > 300:   # 누락 목록이 크면 CSV 로 분리
+        import csv
+
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=["corp_code", "year", "report", "fs_div", "reason"], lineterminator="\n")
+        w.writeheader()
+        w.writerows(meta["missing"])
+        files[assert_prefix(f"{PREFIX}_missing.csv")] = buf.getvalue().encode("utf-8")
+        meta = {**meta, "missing": [], "missing_file": "financials/_missing.csv"}
     files[assert_prefix(f"{PREFIX}_meta.json")] = json.dumps(meta, ensure_ascii=False, indent=1).encode("utf-8")
     return files
 
@@ -182,6 +201,12 @@ def upload(store, files: dict[str, bytes]) -> int:
     for key in files:
         assert_prefix(key)
     for key, data in files.items():
-        ctype = "application/json" if key.endswith(".json") else "application/vnd.apache.parquet"
+        ctype = "text/csv" if key.endswith(".csv") else "application/json" if key.endswith(".json") else "application/vnd.apache.parquet"
         store.put(key, data, content_type=ctype)
     return len(files)
+
+
+def read_rows(path) -> list[dict]:
+    import pyarrow.parquet as pq
+
+    return pq.read_table(path).to_pylist()

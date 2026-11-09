@@ -134,3 +134,18 @@ def test_upload_rejects_whole_batch_if_any_key_outside():
     with pytest.raises(ValueError):
         fp.upload(store, {"financials/_meta.json": b"{}", "dart/a": b"overwrite"})
     assert store.puts == [] and store.objects == {"dart/a": b"keep"}   # 검사 먼저, 아무것도 올리지 않음
+
+
+def test_large_missing_list_moves_to_csv():
+    miss = [{"corp_code": str(i), "year": 2026, "report": "11011", "fs_div": "CFS", "reason": "013"} for i in range(301)]
+    files = fp.build_files({(2026, "11011"): []}, {"missing": miss, "missing_count": 301})
+    assert files["financials/_missing.csv"].decode().count("\n") == 302
+    meta = json.loads(files["financials/_meta.json"])
+    assert meta["missing"] == [] and meta["missing_file"] == "financials/_missing.csv" and meta["missing_count"] == 301
+
+
+def test_collect_resumes_done_parts():
+    calls = []
+    done = {(2024, "11011"): ([{"x": 1}], [], 2)}
+    parts, missing, n = fp.collect(None, [("A", None, "가")], [2024], reports=("11011", "11012"), fetcher=fake_fetcher(calls), done=done)
+    assert parts[(2024, "11011")] == [{"x": 1}] and len(calls) == 2 and n == 4

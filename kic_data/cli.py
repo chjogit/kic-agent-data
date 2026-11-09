@@ -947,8 +947,23 @@ def cmd_collect_fs_parquet(args) -> int:
     n = len(rows) * len(years) * len(reports) * len(fp.FS_DIVS)
     _ok("대상", f"{len(rows)}개사 x {years} x {reports} x {list(fp.FS_DIVS)} = DART 호출 {n}회 (약 {n * fp.MIN_INTERVAL / 60:.0f}분)")
     started = time.monotonic()
+    done, on_part = None, None
+    if args.cache_dir:   # 파트(연도·보고서)마다 로컬에 저장해 두고, 다시 실행하면 끝난 파트는 건너뜀 (같은 회사 집합일 때만)
+        import json as _json
+        cdir = Path(args.cache_dir)
+        cdir.mkdir(parents=True, exist_ok=True)
+        done = {}
+        for f in cdir.glob("*.json"):
+            c = _json.loads(f.read_text(encoding="utf-8"))
+            if c["companies"] == len(rows):
+                done[(c["year"], c["report"])] = (fp.read_rows(cdir / (f.stem + ".parquet")), c["missing"], c["calls"])
+
+        def on_part(y, code, prows, pmiss, pcalls):
+            (cdir / f"{y}-{code}.parquet").write_bytes(fp.to_parquet_bytes(prows))
+            (cdir / f"{y}-{code}.json").write_text(_json.dumps({"year": y, "report": code, "companies": len(rows), "missing": pmiss, "calls": pcalls}, ensure_ascii=False), encoding="utf-8")
+        _ok("이어하기", f"캐시 {cdir}: 끝난 파트 {len(done)}개 재사용")
     parts, missing, calls = fp.collect(
-        make_session(), rows, years, reports=reports,
+        make_session(), rows, years, reports=reports, done=done, on_part=on_part,
         progress=lambda y, c, k, done: print(f"[진행] {y} {c}: 행 {k}, 호출 {done}/{n}, 경과 {(time.monotonic() - started) / 60:.0f}분", flush=True))
     meta = fp.build_meta(parts, missing, rows, years, calls)
     files = fp.build_files(parts, meta)
@@ -2133,6 +2148,7 @@ def main(argv=None) -> int:
     a.add_argument("--companies", default=None, help="종목코드·회사명·고유번호 쉼표 구분 (기본 전체; 지정하면 --dry-run 만 가능)")
     a.add_argument("--years", default=None, help="쉼표 구분 연도 (기본 2021~올해)")
     a.add_argument("--reports", default="11011,11012,11013,11014", help="보고서 코드 쉼표 구분")
+    a.add_argument("--cache-dir", default=None, help="파트별 중간 저장 폴더: 중단 후 다시 실행하면 끝난 연도·보고서는 건너뜀")
     a.add_argument("--out-dir", default="fs_parquet_out", help="--dry-run 출력 폴더")
     a.add_argument("--dry-run", action="store_true", help="로컬 파일만 쓰고 업로드하지 않음"); a.set_defaults(fn=cmd_collect_fs_parquet)
     a = sub.add_parser("export-sentiment", help="감성 분석을 끝낸 뒤 종목×출처×기간 창(14·7·3·1일) 집계를 Object Storage sentiment/latest/ 에 덮어쓰기 (#71)")
