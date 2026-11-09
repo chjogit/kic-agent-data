@@ -163,7 +163,7 @@ def make_files(rows: list[dict], as_of: datetime, generated_at: datetime, run: d
         files[f"{PREFIX}window={n}d.csv"] = ("﻿" + buf.getvalue()).encode("utf-8")           # BOM: Excel 한글
     meta = {"as_of": as_of.isoformat(timespec="seconds"), "generated_at": generated_at.isoformat(timespec="seconds"), "complete": True,
             "windows": list(WINDOWS), "window_rule": "기준일(KST 달력일) 포함 N일. 문서 날짜(published_at)는 날짜 단위라 시각 단위 창은 아님.",
-            "compare_rule": "변화 = 이번 기간 평균 점수 − 직전 같은 길이 기간 평균 점수. 직전 기간 자료가 없으면 '비교 불가'(문서 보관 14일).",
+            "compare_rule": "변화 = 이번 기간 평균 점수 − 직전 같은 길이 기간 평균 점수. 직전 기간 자료가 없으면 '비교 불가'(뉴스·댓글은 보관 14일이라 14일 창은 대부분 비교 불가).",
             "ratio_rule": "비율 = 해당 라벨 건수 / 감성 결과가 있는 문서 수(n_labeled). 평균 점수 = 점수가 있는 문서(n_scored) 평균, -1~+1.",
             "sentiment_method": METHOD_NOTE, "labels": {"positive": "긍정", "neutral": "중립", "negative": "부정", "none": "무관(감성 표현 없음)"},
             "privacy": "원문·제목·주소·작성자는 포함하지 않음(건수·비율·평균 점수·날짜만).",

@@ -16,7 +16,7 @@
 `ticker, name, market, source, window_days, as_of_date, n_docs, n_labeled, n_unlabeled, positive, neutral, negative, none, *_ratio, avg_score, n_scored, prev_avg_score, change, change_status, last_doc_date, last_collected_at`
 - 문서 0건인 종목·출처도 행을 남깁니다(`n_docs=0`, 비율·평균은 null).
 - 비율 = 라벨 건수 / `n_labeled`. 평균 점수 = `n_scored` 문서 평균(−1~+1). `none` = 감성 표현이 없는 문서.
-- `change` = 이번 평균 − 직전 같은 길이 기간 평균. 직전 기간 점수가 없으면 null + `change_status` 에 사유(`비교 불가(...)`). 문서가 14일만 보관돼 14일 창은 직전 기간 자료가 없어 항상 비교 불가.
+- `change` = 이번 평균 − 직전 같은 길이 기간 평균. 직전 기간 점수가 없으면 null + `change_status` 에 사유(`비교 불가(...)`). 뉴스·유튜브 댓글은 14일만 보관돼 14일 창은 직전 기간 자료가 없어 비교 불가이고, 블로그·카페는 보관분이 더 길어 14일 창에서도 비교 가능한 행이 있다.
 - `합계` 행은 메인 DB 출처와 kic-opinion(블로그·카페) 출처를 모두 합친 값.
 - 원문·제목·주소·작성자는 없습니다. 방법: 키워드 사전(lexicon) 기준선, 사람 라벨 정확도 56.6% (`_meta.json` 에도 적음).
 
