@@ -10,6 +10,11 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 
 ---
 
+### 2026-11-09 kic-opinion 팀원 접속 안내 문서 추가 (#78)
+- 변경: `docs/KIC_OPINION_ACCESS.md`(표·열·경로·접속 방법·관리자용 절차) 추가, 읽기 전용 역할 SQL `sql/manual/kic_opinion_readonly_role.sql`(수동 실행 전용, 아직 실행 안 함) 추가. DB·스키마·환경변수 변경 없음.
+- 영향: CH·JT·SH·SW — kic-opinion 을 읽으려면 관리자에게 읽기 전용 접속 정보를 요청.
+- 필요 조치: 관리자가 읽기 전용 역할 생성(사용자 승인 필요)과 `storage:read` 키 발급 후 팀원에게 개인 전달.
+
 ### 2026-11-09 감성 집계 Object Storage 내보내기 (#71) — 추가만
 - **변경**: 새 명령 `export-sentiment`와 워크플로 `export-sentiment.yml`(09·14·18·21시 KST). 종목×출처×기간 창(14·7·3·1일) 감성 집계를 Object Storage `sentiment/latest/` 의 `window=Nd.json/.csv` 8개 + `_meta.json` 에 덮어씀. DB 스키마 변화 없음. `/quality` 에 신호등 `sentiment-export` 추가(1회 실패·13시간 초과 시 error).
 - **영향**: 기존 표·작업 변화 없음. `sentiment/latest/` 밖 객체는 건드리지 않음. 저장소 변수 `SENTIMENT_EXPORT_UPLOAD=true` 전에는 예약 실행이 dry-run. 필요한 secret: 기존 `DATABASE_URL`·`OPINION_DATABASE_URL`·`NEON_STORAGE_*`(archive-dart 와 동일).

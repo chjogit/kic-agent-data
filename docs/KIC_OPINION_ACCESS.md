@@ -1,6 +1,6 @@
 # kic-opinion 연결 안내 (팀원용)
 
-> 초안 작성: PM, 2026-11-09. 이 문서는 kic-agent-data 저장소 `docs/KIC_OPINION_ACCESS.md` 로 옮겨 팀에 공유합니다(#78).
+> 작성 2026-11-09 (#78). 표·열·행 수·경로는 11/9 에 읽기 전용으로 실제 조회해 맞췄습니다.
 > **이 문서와 저장소·이슈·채팅방 공지에는 접속 주소·비밀번호·키를 절대 적지 않습니다.** 접속 정보는 관리자(CH)가 한 사람씩 따로 전달합니다.
 
 ## 1. kic-opinion 이 무엇인가
@@ -18,12 +18,13 @@
 ### 2-1. DB 표
 | 표 | 행(약) | 열 | 설명 |
 |---|---|---|---|
-| `rag.document` | 수십만 | doc_id, company_id, source, title, url, published_at, summary, created_at | 네이버 블로그(`naver_blog`)·카페(`naver_cafe`) 문서 정보. 본문 전체는 없고 요약만 |
+| `rag.document` | 수십만 | doc_id, company_id, source, title, url, published_at, summary, created_at | 네이버 블로그(`naver_blog`)·카페(`naver_cafe`) 문서 정보. 본문 전체는 없고 요약만. `published_at` 은 날짜(date) |
 | `core.doc_sentiment` | 수십만 | doc_id, score, label, method, scored_at | 문서별 감성 점수·라벨(긍정·중립·부정·무관)·방식 |
-| `core.doc_daily_agg` | 수천 | company_id, source, d, n_docs, n_scored, score_sum, updated_at | 종목·출처·일자별 문서 수·감성 합(보관 기간이 지나 지운 문서도 집계로 남음) |
+| `core.doc_daily_agg` | 수천 | company_id, source, d, n_docs, n_scored, score_sum, updated_at | 종목·출처·일자별 문서 수·감성 합. **보관 기간이 지나 문서를 지운 날짜만** 들어 있음(최근 14일은 `rag.document`·`core.doc_sentiment` 에서 직접 셈) |
 | `core.company` | 230종목 | company_id, market, ticker, name | 종목 목록(메인 DB 와 같은 company_id) |
 
-- 보관: 블로그·카페 문서는 **14일 보관** 원칙입니다(집계 표는 남음).
+- 보관: 블로그·카페 문서는 **14일 보관**입니다(매일 정리, 지운 날은 `core.doc_daily_agg` 로 남음). 그래서 `rag.document` 에는 최근 약 15일(오늘 포함, 11/9 기준 10/26~)만 있고, 그 이전은 집계 표에만 있습니다.
+- 이 DB 에는 위 표 말고 RAG 청크·벡터가 없습니다(메인 DB 에 있음).
 - 감성 점수의 한계: 키워드 사전 방식, 사람 라벨 600건 중 감성 대상 440건 기준 **정확도 56.6%**(긍정을 적게 잡고 중립으로 쏠림). 판단 근거로 쓸 때 이 점을 함께 적어 주세요.
 
 ### 2-2. Object Storage 경로
@@ -53,12 +54,16 @@ load_dotenv()
 with psycopg.connect(os.environ["OPINION_DATABASE_URL"],
                      options="-c default_transaction_read_only=on") as conn:   # 읽기 전용 세션
     rows = conn.execute("""
-        select c.name, a.source, a.d, a.n_docs, a.score_sum / nullif(a.n_scored, 0) as avg_score
-        from core.doc_daily_agg a join core.company c using (company_id)
-        where c.name = %s and a.d >= current_date - 7
-        order by a.d""", ["삼성전자"]).fetchall()
+        select d.source, d.published_at, count(*) as n_docs, avg(s.score) as avg_score
+        from rag.document d
+        join core.company c using (company_id)
+        left join core.doc_sentiment s using (doc_id)
+        where c.name = %s and d.published_at >= current_date - 7
+        group by d.source, d.published_at
+        order by d.published_at, d.source""", ["삼성전자"]).fetchall()
 print(rows)
 ```
+14일보다 오래된 날짜는 `core.doc_daily_agg`(날짜 열 `d`, 평균 = `score_sum / n_scored`)에서 읽습니다.
 
 ### 4-2. Object Storage (Python, boto3)
 ```python
@@ -82,6 +87,8 @@ for o in s3.list_objects_v2(Bucket=bucket, Prefix="sentiment/latest/").get("Cont
 ```
 
 ### 4-3. 재무제표 Parquet 읽기 (수집 후)
+> 아직 검증 전입니다(#77 로 `financials/` 가 생긴 뒤 확인). 아래 키 이름은 예시입니다.
+
 ```python
 import io
 import pandas as pd
@@ -104,7 +111,23 @@ print(df.head())
 - 구성 변경 기록: kic-agent-data `docs/DATA_CHANGES.md`
 
 ## 7. 관리자용 (CH): 읽기 전용 접속 만들기
-이 절에는 비밀번호·키를 적지 않습니다. 실행은 관리자가 직접 하거나 승인 후에만 합니다.
-- **DB**: [`docs/sql/opinion_readonly_role.sql`](sql/opinion_readonly_role.sql) 의 `<비밀번호>` 자리를 채워 Neon SQL 편집기(kic-opinion 프로젝트)에서 실행합니다. `core`·`rag` 스키마 SELECT 만 주고, 앞으로 생기는 표에도 기본 권한을 겁니다. 만든 뒤 접속 문자열은 팀원에게 개인 메시지로 전달합니다.
-- **Object Storage**: Neon 콘솔 → kic-opinion 프로젝트 → Storage → 자격 증명(credential) 생성 시 권한을 `storage:read` 로 고릅니다. 팀원별로 하나씩 만들면 폐기가 쉽습니다. 키는 한 번만 보이므로 바로 개인 메시지로 전달합니다.
-- 연결 확인은 4-1·4-2 예제를 읽기 전용 계정으로 실행해 봅니다(값은 화면·로그에 남기지 않습니다).
+이 절에는 비밀번호·키를 적지 않습니다. 권한을 바꾸는 작업이라 관리자가 직접, 사용자 승인 후에만 실행합니다.
+
+### 7-1. DB 읽기 전용 역할
+1. [`sql/manual/kic_opinion_readonly_role.sql`](../sql/manual/kic_opinion_readonly_role.sql) 을 엽니다(자동 실행되지 않는 수동 파일).
+2. Neon 콘솔 → kic-opinion 프로젝트 → SQL 편집기(소유자 계정)에서 `<비밀번호>` 자리를 채워 실행합니다. 팀원별로 역할 이름(`opinion_ro_이름`)을 바꿔 만들면 폐기가 쉽습니다.
+3. 콘솔의 Connect(접속) 창에서 만든 역할을 골라 접속 문자열을 복사해 팀원에게 개인 메시지로 전달합니다(팀원은 `OPINION_DATABASE_URL` 에 넣음).
+4. 확인: 그 문자열로 `select count(*) from core.company` 는 성공, `insert` 는 거부돼야 합니다.
+5. 폐기: 같은 파일 맨 아래 폐기 구문을 소유자 역할로 실행합니다.
+
+### 7-2. Object Storage 읽기 전용 키 (`storage:read`)
+Neon 콘솔 화면 이름은 바뀔 수 있으니 아래는 일반 순서입니다.
+1. Neon 콘솔 → kic-opinion 프로젝트 → Storage(저장소) → 자격 증명(Credentials)에서 새로 만들기.
+2. 권한(스코프)에서 **`storage:read`** 만 고르고 쓰기·삭제 권한은 선택하지 않습니다. 이름은 팀원별(예: `read-이름`)로 붙입니다.
+3. 만들면 접근 키·비밀 키가 **한 번만** 보입니다. 바로 복사해 팀원에게 개인 메시지로 전달하고 화면은 닫습니다.
+4. 함께 전달할 값: 엔드포인트, 버킷 이름, 리전(3절의 환경변수 이름 그대로).
+5. 폐기·교체: 같은 화면에서 해당 자격 증명을 폐기(revoke)하거나 회전(rotate)합니다.
+6. 키가 읽기 전용인지 확인: 4-2 로 목록·읽기는 되고, 올리기·삭제는 거부돼야 합니다.
+
+### 7-3. 확인
+4-1·4-2 예제를 읽기 전용 정보로 실행해 봅니다(값은 화면·로그에 남기지 않습니다).
