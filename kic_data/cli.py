@@ -8,6 +8,7 @@
   purge-news-docs     메인 뉴스·유튜브 댓글 보관 기한 정리 (--dry-run 으로 건수 확인)
   alert-sync       품질 알림(용량·늦은 데이터·수집 멈춤·API 오류)을 GitHub Issue 로 동기화
   archive-dart     DART A·B 공시 원문을 Object Storage 에 보관 (--dry-run 으로 건수·용량 확인)
+  export-sentiment 감성 분석을 끝낸 뒤 종목×출처×기간 창(14·7·3·1일) 집계를 Object Storage sentiment/latest/ 에 덮어쓰기
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
   seed-companies   universe.py 의 종목을 core.company 에 등록
   sync-dart-codes  DART 고유번호를 KR 종목에 연결
@@ -917,6 +918,83 @@ def cmd_archive_dart(args) -> int:
     _ok("보관", f"{r['uploaded']}건 {r['uploaded_bytes'] / mb:.1f}MB (실패 {len(r['failed'])}건, "
                 f"누적 {(r['used_bytes'] + r['uploaded_bytes']) / mb:.0f}MB, 경과 {(time.monotonic() - started) / 60:.0f}분)")
     return 1 if r["failed"] else 0
+
+
+def cmd_export_sentiment(args) -> int:
+    """감성 점수를 먼저 매기고(새 문서) → 집계 → (--dry-run 이 아니면) Object Storage `sentiment/latest/` 덮어쓰기 (#71).
+    파일은 모두 메모리에서 만든 뒤에만 올린다. 집계·직렬화가 실패하면 업로드하지 않고 실패로 끝난다."""
+    from datetime import datetime
+    from pathlib import Path
+
+    from . import jobs, sentiment_export as sx, storage
+
+    started = time.monotonic()
+    now = datetime.now(sx.KST)
+    as_of_dt = datetime.fromisoformat(args.as_of).astimezone(sx.KST) if args.as_of else now
+    as_of = as_of_dt.date()
+    state = None
+    try:
+        with db.connect() as conn, sx.opinion_reader(conn) as oconn:
+            if not args.dry_run:
+                state = jobs.DbState(conn)
+                state.mark_running("export-sentiment", datetime.now(sx.KST))
+            scored = 0
+            if not args.skip_scoring:                      # (1) 그 시각까지 들어온 문서의 감성 분석을 먼저 끝낸다
+                rc = cmd_sentiment(argparse.Namespace(method=None, limit=None, rescore=False))
+                if rc:
+                    raise RuntimeError("감성 분석이 실패해 집계하지 않습니다")
+            main_src, op_src = db.split_sources(oconn, conn, db.SENTIMENT_SOURCES)
+            extra = [s for s in sx.observed_sources(conn) if s not in main_src and s not in op_src]
+            main_src += extra
+            sources = list(dict.fromkeys([*main_src, *op_src]))
+            with conn.cursor() as cur:                     # (2) 집계
+                cur.execute(sx.COMPANIES_SQL)
+                companies = [dict(zip(("company_id", "ticker", "name", "market"), r)) for r in cur.fetchall()]
+            conn.commit()
+            agg = sx.fetch(conn, main_src, as_of) + (sx.fetch(oconn, op_src, as_of) if op_src else [])
+            rows = sx.build_rows(companies, sources, agg, as_of)
+            seconds = round(time.monotonic() - started, 1)
+            last = {}
+            for a in agg:
+                if a["last_collected_at"] and (a["source"] not in last or a["last_collected_at"] > last[a["source"]]):
+                    last[a["source"]] = a["last_collected_at"]
+            run = {"sources": sources, "companies": len(companies), "rows_per_window": len(rows) // len(sx.WINDOWS),
+                   "last_collected_at_by_source": {k: v.astimezone(sx.KST).isoformat(timespec="seconds") for k, v in sorted(last.items())},
+                   "unlabeled_docs_in_14d": sum(r["n_unlabeled"] for r in rows if r["window_days"] == 14 and r["source"] == sx.TOTAL),
+                   "seconds_to_build": seconds, "dry_run": bool(args.dry_run)}
+            files = sx.make_files(rows, as_of_dt, now, run)
+            for k, v in sorted(files.items()):
+                _ok(k.removeprefix(sx.PREFIX), f"{len(v):,}바이트")
+            _ok("집계", f"기준일 {as_of} · 종목 {len(companies)} · 출처 {len(sources)}({', '.join(sources)}) · 창별 {run['rows_per_window']}행")
+            if args.out_dir:
+                out = Path(args.out_dir)
+                for k, v in files.items():
+                    p = out / k.removeprefix(sx.PREFIX)
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(v)
+                _ok("파일 저장", str(out))
+            if args.dry_run:
+                _ok("dry-run", "업로드 없음")
+                return 0
+            store = storage.get_store()                    # (3) 업로드(덮어쓰기)
+            if store is None:
+                raise RuntimeError(f"Object Storage 환경변수가 비어 있어 올리지 않습니다: {', '.join(storage.missing_settings())}")
+            r = sx.upload(store, files)
+            _ok("업로드", f"{r['uploaded']}개 {r['bytes']:,}바이트, 옛 파일 삭제 {len(r['deleted'])}개{(' ' + ', '.join(r['deleted'])) if r['deleted'] else ''}")
+            state.finish("export-sentiment", status="ok", cursor=0, complete=True, seconds=time.monotonic() - started,
+                         detail=f"{r['uploaded']}개 {r['bytes']:,}바이트", finished=datetime.now(sx.KST), trigger="cli", tickers=None,
+                         log=f"기준일 {as_of} · 행 {len(rows)} · 업로드 {r['uploaded']}개", started=now)
+    except Exception as exc:  # noqa: BLE001
+        _fail("감성 집계 내보내기", f"{type(exc).__name__}: {str(exc)[:300]}")
+        if state is not None:
+            try:
+                state.finish("export-sentiment", status="failed", cursor=0, complete=False, seconds=time.monotonic() - started,
+                             detail=str(exc)[:200], finished=datetime.now(sx.KST), trigger="cli", tickers=None,
+                             log=f"{type(exc).__name__}: {str(exc)[:500]}", started=now)
+            except Exception:  # noqa: BLE001
+                pass
+        return 1
+    return 0
 
 
 def cmd_report_exposure(args) -> int:
@@ -2001,6 +2079,11 @@ def main(argv=None) -> int:
     a.add_argument("--cap-gb", type=float, default=None, help="누적 상한 GB (기본 4, 환경변수 DART_ARCHIVE_CAP_GB)")
     a.add_argument("--max-minutes", type=float, default=None, help="시간 예산(분): 넘기면 멈추고 남은 건수 출력 (다음 실행이 이어 올림)")
     a.add_argument("--dry-run", action="store_true", help="대상 건수·예상 용량만 출력"); a.set_defaults(fn=cmd_archive_dart)
+    a = sub.add_parser("export-sentiment", help="감성 분석을 끝낸 뒤 종목×출처×기간 창(14·7·3·1일) 집계를 Object Storage sentiment/latest/ 에 덮어쓰기 (#71)")
+    a.add_argument("--dry-run", action="store_true", help="집계·파일 만들기만 하고 업로드하지 않음 (--out-dir 로 파일 저장)")
+    a.add_argument("--out-dir", default=None, help="만든 파일을 이 폴더에도 저장")
+    a.add_argument("--as-of", default=None, help="기준 시각 ISO (기본: 지금, KST). 창은 이 시각의 KST 달력일 기준")
+    a.add_argument("--skip-scoring", action="store_true", help="감성 분석 단계를 건너뜀 (확인용)"); a.set_defaults(fn=cmd_export_sentiment)
     a = sub.add_parser("collect-report-exposure", help="사업보고서 원문 → 환율·이자율 민감도·외화 자산부채·수출 비중·외환 파생·가격변동 발췌")
     a.add_argument("--force", action="store_true", help="이미 읽은 원문도 다시")
     a.set_defaults(fn=cmd_report_exposure)

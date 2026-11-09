@@ -10,6 +10,11 @@ kic-agent-data(수집)와 OpenResearch(에이전트)가 **같은 내용을 두 �
 
 ---
 
+### 2026-11-09 감성 집계 Object Storage 내보내기 (#71) — 추가만
+- **변경**: 새 명령 `export-sentiment`와 워크플로 `export-sentiment.yml`(09·14·18·21시 KST). 종목×출처×기간 창(14·7·3·1일) 감성 집계를 Object Storage `sentiment/latest/` 의 `window=Nd.json/.csv` 8개 + `_meta.json` 에 덮어씀. DB 스키마 변화 없음. `/quality` 에 신호등 `sentiment-export` 추가(1회 실패·13시간 초과 시 error).
+- **영향**: 기존 표·작업 변화 없음. `sentiment/latest/` 밖 객체는 건드리지 않음. 저장소 변수 `SENTIMENT_EXPORT_UPLOAD=true` 전에는 예약 실행이 dry-run. 필요한 secret: 기존 `DATABASE_URL`·`OPINION_DATABASE_URL`·`NEON_STORAGE_*`(archive-dart 와 동일).
+- **필요 조치**: 읽는 팀원은 `docs/SENTIMENT_EXPORT.md` 의 열·규칙 참고. 첫 실제 업로드는 PM 승인 후.
+
 ### 2026-11-03 신용공여 잔고(시장 전체) 수집 (#40, kic-agent-data `sql/031`) — 추가만
 - **변경**: 새 표 `core.credit_balance`(bas_dt, loan_total, fields jsonb, raw jsonb) — 공공데이터포털 금융위원회_금융투자협회종합통계정보의 신용공여 잔고 추이. **시장 전체 합계이며 종목별이 아님.** 작업 `credit-balance` 매일(키 `DATA_GO_KR_KEY`/`FSC_API_KEY`). 키가 서비스에 적용 전이면 '건너뜀'. 11/4 적재 완료: 1,216행(2021-11-09~2026-11-02, 영업일 일별), 원천이 하루 늦게 올라옴. 과거분 보충은 `collect-credit-balance --days N --backfill`.
 - **영향**: 기존 표·열 변화 없음. 엔드포인트·필드·단위는 11/4 `probe-credit-balance` 로 확인 완료(단위 **원**). `loan_total` = 신용거래융자 전체(`crdTrFingWhl`, 약 29.2조), 나머지 숫자 칸(유가증권·코스닥 융자, 대주, 청약자금대출, 예탁증권담보융자)은 `fields` 에 원천 이름 그대로 저장.

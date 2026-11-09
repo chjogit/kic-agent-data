@@ -29,7 +29,13 @@ API_OF_JOB = {
     "finnhub-news": "finnhub", "youtube": "youtube", "youtube-rest": "youtube",
     "sync-kospi200": "naver_finance", "backfill-investor-flows": "naver_finance", "investor-flows": "naver_finance",
 }
-API_NAMES = sorted(set(API_OF_JOB.values()))
+# jobs.JOBS(매시간 수집 실행)에 없고 별도 워크플로로 도는 작업: 감성 집계 내보내기(#71) — /quality 신호등만 공유
+EXTERNAL_API_OF_JOB = {"export-sentiment": "sentiment-export"}
+API_NAMES = sorted(set(API_OF_JOB.values()) | set(EXTERNAL_API_OF_JOB.values()))
+# 하루 4번(09·14·18·21시 KST) 도는 작업이라 기본(2일)보다 짧게: 가장 긴 간격(21시→다음날 9시 = 12시간)에 여유 1시간.
+# 또 이 작업은 실패가 1번이어도 바로 빨강(사용자 요청: 4회 중 실패 시 빨강).
+STALE_AFTER_BY_API = {"sentiment-export": timedelta(hours=13)}
+STRICT_APIS = {"sentiment-export"}
 SCHEMAS = ("core", "ops", "quality", "rag", "raw")
 
 QUOTA_RE = re.compile(r"\b429\b|too many requests|quota|rate.?limit|한도|LIMITED_NUMBER", re.I)
@@ -52,14 +58,14 @@ def api_status(row: dict, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     fails = row.get("consecutive_failures") or 0
     success = row.get("last_success")
-    if fails >= 2:
+    if fails >= 2 or (fails >= 1 and row.get("api_name") in STRICT_APIS):
         return "error"
     if fails == 1 or row.get("quota_hit"):
         return "warn"
     if success is None:
         return "error" if row.get("last_error") else "unknown"
-    if now - success > STALE_AFTER:
-        return "warn"
+    if now - success > STALE_AFTER_BY_API.get(row.get("api_name"), STALE_AFTER):
+        return "error" if row.get("api_name") in STRICT_APIS else "warn"
     return "ok"
 
 
@@ -109,7 +115,7 @@ def record_job(conn, job: str, *, status: str, seconds: float, detail: str | Non
                finished: datetime) -> None:
     """작업 결과를 원천 API 상태·이상 이벤트로 남깁니다. 키가 없어 건너뛴 작업은 기록하지 않습니다.
     이전 이벤트는 먼저 해결 처리하고(정상이면 회복, 아니면 대체), 이번이 실패·일부 실패면 새로 남깁니다."""
-    api = API_OF_JOB.get(job)
+    api = API_OF_JOB.get(job) or EXTERNAL_API_OF_JOB.get(job)
     if api is None or status == "skipped":
         return
     failed = status == "failed"
@@ -195,7 +201,7 @@ def api_detail(conn, name: str, limit: int = 20) -> dict | None:
                     "FROM quality.checks WHERE source = %s ORDER BY check_time DESC LIMIT %s", [name, limit])
         checks = _rows(cur)
     item = _api_item(rows[0] if rows else {"api_name": name}, now)
-    item["jobs"] = sorted(j for j, a in API_OF_JOB.items() if a == name)
+    item["jobs"] = sorted(j for j, a in {**API_OF_JOB, **EXTERNAL_API_OF_JOB}.items() if a == name)
     item["recent_checks"] = checks
     return item
 
