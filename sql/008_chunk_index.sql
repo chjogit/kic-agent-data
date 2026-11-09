@@ -7,6 +7,6 @@ BEGIN
         WHERE attrelid = to_regclass('rag.chunk') AND attname = 'embedding' AND NOT attisdropped
           AND format_type(atttypid, atttypmod) LIKE 'halfvec%'
     ) THEN
-        CREATE INDEX IF NOT EXISTS ix_chunk_embedding ON rag.chunk USING hnsw (embedding vector_cosine_ops);
+        NULL;   -- HNSW 인덱스는 만들지 않음(#69, sql/034). 다시 만들면 sql/034 가 지움
     END IF;
 END $$;

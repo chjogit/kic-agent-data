@@ -28,7 +28,7 @@ NEW_TABLES = (
 
 # DB 용량 (Neon 무료 1GB). 경고 기준은 환경변수 DB_WARN_MB 로 바꿀 수 있습니다.
 DB_LIMIT_MB = 1024
-DB_WARN_MB = 900
+DB_WARN_MB = 700    # 내부 한도 800MB 에 맞춤(#69 PM 결정 11/6). 이전 900 은 773MB 에서도 울리지 않았음
 NEON_GAP_MB = 21  # Neon 콘솔의 logical size 는 pg_database_size 보다 이만큼 크게 나옴 (10-30 실측)
 
 

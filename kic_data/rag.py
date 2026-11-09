@@ -15,7 +15,7 @@ from .config import env
 EMBED_DIM = 1024
 
 # 임베딩 대상 (10-30 사용자 결정). 블로그·카페·유튜브 댓글은 키워드 검색만 유지.
-TARGET_SOURCES = ("naver_news", "naver_news_backfill", "finnhub_news", "dart_report")
+TARGET_SOURCES = ("naver_news", "naver_news_backfill", "finnhub_news", "dart_report", "youtube_comment")   # 유튜브 댓글은 검색 후보 전용(원문 비공개, #69)
 DB_LIMIT_MB = 800  # 적재 후 DB 전체가 이 크기를 넘을 것으로 추정되면 쓰지 않음
 
 # Upstage Solar Embedding 2 (10-30 공식 문서 확인): 1024차원, 요청당 100개·204,800토큰, 100 RPM.
@@ -176,7 +176,7 @@ def ingest(conn, embedder, sources=TARGET_SOURCES, limit: int | None = None, sin
     per_doc = [(d, rag_chunks) for d in docs if (rag_chunks := build_chunks(d[1], d[2]))]
     n_chunks = sum(len(c) for _, c in per_doc)
     avg_bytes = sum(len(t.encode()) for _, c in per_doc for t in c) / n_chunks if n_chunks else 0.0
-    estimate = estimate_chunk_bytes(n_chunks, avg_bytes, vec_type, column_dim or EMBED_DIM, hnsw=True)
+    estimate = estimate_chunk_bytes(n_chunks, avg_bytes, vec_type, column_dim or EMBED_DIM, hnsw=False)      # HNSW 인덱스 삭제(sql/034)
     size = db.database_size_bytes(conn)
     result = {"docs": len(docs), "chunks": n_chunks, "estimate_bytes": estimate, "db_bytes": size,
               "limit_bytes": limit_mb * 1024 * 1024, "written": 0, "failed": [], "stopped": False}
