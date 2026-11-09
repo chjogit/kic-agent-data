@@ -7,3 +7,4 @@ __pycache__/
 wallet/
 logs/
 status.json
+fs_parquet_out/

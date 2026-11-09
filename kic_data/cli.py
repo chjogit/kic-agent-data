@@ -7,6 +7,7 @@
   purge-opinion-docs  블로그·카페 문서 보관 기한 정리 (--dry-run 으로 건수 확인)
   purge-news-docs     메인 뉴스·유튜브 댓글 보관 기한 정리 (--dry-run 으로 건수 확인)
   alert-sync       품질 알림(용량·늦은 데이터·수집 멈춤·API 오류)을 GitHub Issue 로 동기화
+  collect-fs-parquet DART 전체 재무제표를 Parquet 으로 (--dry-run 으로 로컬 확인)
   archive-dart     DART A·B 공시 원문을 Object Storage 에 보관 (--dry-run 으로 건수·용량 확인)
   export-sentiment 감성 분석을 끝낸 뒤 종목×출처×기간 창(14·7·3·1일) 집계를 Object Storage sentiment/latest/ 에 덮어쓰기
   status           수집 현황 점검 (읽기 전용: 테이블별 건수·기간·최신성, --json 으로 파일 저장)
@@ -918,6 +919,55 @@ def cmd_archive_dart(args) -> int:
     _ok("보관", f"{r['uploaded']}건 {r['uploaded_bytes'] / mb:.1f}MB (실패 {len(r['failed'])}건, "
                 f"누적 {(r['used_bytes'] + r['uploaded_bytes']) / mb:.0f}MB, 경과 {(time.monotonic() - started) / 60:.0f}분)")
     return 1 if r["failed"] else 0
+
+
+def cmd_collect_fs_parquet(args) -> int:
+    """DART 전체 재무제표를 Parquet 으로 (#77). --dry-run 은 로컬 폴더에만 쓰고 업로드하지 않는다."""
+    from pathlib import Path
+
+    from . import fs_parquet as fp, storage
+
+    years = sorted({int(y) for y in args.years.split(",") if y.strip()}) if args.years else list(range(2021, date.today().year + 1))
+    reports = [r.strip() for r in args.reports.split(",") if r.strip()]
+    want = [c.strip() for c in args.companies.split(",") if c.strip()] if args.companies else None
+    with db.connect() as conn:
+        rows = [(corp, ticker, name) for _, ticker, name, corp, _ in db.list_companies(conn, "KR") if corp]
+    if want:
+        rows = [r for r in rows if r[1] in want or r[2] in want or r[0] in want]
+        found = {x for r in rows for x in r}
+        for w in want:
+            if w not in found:
+                _fail("회사", f"{w}: core.company 에서 찾지 못함")
+    if not rows:
+        _fail("대상", "회사가 없습니다")
+        return 1
+    if not args.dry_run and want:
+        _fail("대상", "일부 회사만으로는 업로드하지 않습니다(연도·보고서 파일을 통째로 교체하므로 --dry-run 으로만)")
+        return 1
+    n = len(rows) * len(years) * len(reports) * len(fp.FS_DIVS)
+    _ok("대상", f"{len(rows)}개사 x {years} x {reports} x {list(fp.FS_DIVS)} = DART 호출 {n}회 (약 {n * fp.MIN_INTERVAL / 60:.0f}분)")
+    started = time.monotonic()
+    parts, missing, calls = fp.collect(
+        make_session(), rows, years, reports=reports,
+        progress=lambda y, c, k, done: print(f"[진행] {y} {c}: 행 {k}, 호출 {done}/{n}, 경과 {(time.monotonic() - started) / 60:.0f}분", flush=True))
+    meta = fp.build_meta(parts, missing, rows, years, calls)
+    files = fp.build_files(parts, meta)
+    if args.dry_run:
+        out = Path(args.out_dir)
+        for key, data in files.items():
+            path = out / key
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            _ok(key, f"{len(data):,}바이트")
+        _ok("dry-run", f"로컬 {out} 에만 씀, 업로드 없음. 행 {meta['row_count']}, 누락 {len(missing)}건")
+        return 0
+    store = storage.get_store()
+    if store is None:
+        _fail("건너뜀", f"필요한 환경변수 {', '.join(storage.missing_settings())}")
+        return 1
+    count = fp.upload(store, files)
+    _ok("업로드", f"financials/ 아래 {count}개 파일, 행 {meta['row_count']}, 누락 {len(missing)}건")
+    return 1 if any(m["reason"] != "013" for m in missing) else 0
 
 
 def cmd_export_sentiment(args) -> int:
@@ -2079,6 +2129,12 @@ def main(argv=None) -> int:
     a.add_argument("--cap-gb", type=float, default=None, help="누적 상한 GB (기본 4, 환경변수 DART_ARCHIVE_CAP_GB)")
     a.add_argument("--max-minutes", type=float, default=None, help="시간 예산(분): 넘기면 멈추고 남은 건수 출력 (다음 실행이 이어 올림)")
     a.add_argument("--dry-run", action="store_true", help="대상 건수·예상 용량만 출력"); a.set_defaults(fn=cmd_archive_dart)
+    a = sub.add_parser("collect-fs-parquet", help="DART 전체 재무제표(연결·별도)를 Parquet 으로 만들어 Object Storage financials/ 에 올림 (#77, --dry-run 은 로컬만)")
+    a.add_argument("--companies", default=None, help="종목코드·회사명·고유번호 쉼표 구분 (기본 전체; 지정하면 --dry-run 만 가능)")
+    a.add_argument("--years", default=None, help="쉼표 구분 연도 (기본 2021~올해)")
+    a.add_argument("--reports", default="11011,11012,11013,11014", help="보고서 코드 쉼표 구분")
+    a.add_argument("--out-dir", default="fs_parquet_out", help="--dry-run 출력 폴더")
+    a.add_argument("--dry-run", action="store_true", help="로컬 파일만 쓰고 업로드하지 않음"); a.set_defaults(fn=cmd_collect_fs_parquet)
     a = sub.add_parser("export-sentiment", help="감성 분석을 끝낸 뒤 종목×출처×기간 창(14·7·3·1일) 집계를 Object Storage sentiment/latest/ 에 덮어쓰기 (#71)")
     a.add_argument("--dry-run", action="store_true", help="집계·파일 만들기만 하고 업로드하지 않음 (--out-dir 로 파일 저장)")
     a.add_argument("--out-dir", default=None, help="만든 파일을 이 폴더에도 저장")
