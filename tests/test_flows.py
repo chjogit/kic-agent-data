@@ -205,14 +205,14 @@ def cli_wait_stop() -> int:
 
 
 class ExpectedFlowDateTest(unittest.TestCase):
-    def _d(self, y, m, d, hh, mm=0, grace=0, after=None):
+    def _d(self, y, m, d, hh, mm=0, after=None):
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
         from kic_data.util import expected_flow_date
 
         now = datetime(y, m, d, hh, mm, tzinfo=ZoneInfo("Asia/Seoul"))
-        return expected_flow_date(now, grace_hours=grace) if after is None else expected_flow_date(now, after=after, grace_hours=grace)
+        return expected_flow_date(now) if after is None else expected_flow_date(now, after=after)
 
     def test_evening_weekday_expects_today_and_daytime_expects_previous_weekday(self):
         self.assertEqual(self._d(2026, 11, 6, 19), date(2026, 11, 6))       # 금 저녁 → 금
@@ -224,7 +224,53 @@ class ExpectedFlowDateTest(unittest.TestCase):
         self.assertEqual(self._d(2026, 11, 7, 20), date(2026, 11, 6))
         self.assertEqual(self._d(2026, 11, 8, 3), date(2026, 11, 6))
 
-    def test_alert_grace_waits_36_hours_before_calling_it_late(self):
-        from datetime import time
-        self.assertEqual(self._d(2026, 11, 9, 14, grace=36, after=time(0, 0)), date(2026, 11, 6))    # 월 14시 → 토 02시 → 금: 11/6 수급 없으면 경보
-        self.assertEqual(self._d(2026, 11, 3, 8, grace=36, after=time(0, 0)), date(2026, 10, 30))    # 화 오전엔 월 수급을 아직 기대하지 않음
+    def test_alert_flow_date_is_latest_day_whose_next_business_day_1400_has_passed(self):
+        """#74 경보 규칙: 기준 거래일의 다음 영업일 14:00(KST) 까지 수급이 없으면 경보 (F = 그 14:00 이 지난 가장 최근 영업일)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from kic_data.util import alert_flow_date
+
+        def f(m, d, hh, mm=0):
+            return alert_flow_date(datetime(2026, m, d, hh, mm, tzinfo=ZoneInfo("Asia/Seoul")))
+
+        self.assertEqual(f(11, 4, 13, 59), date(2026, 11, 2))    # 수 13:59 → 화 자료는 아직 기다림 (F=월)
+        self.assertEqual(f(11, 4, 14, 1), date(2026, 11, 3))     # 수 14:01 → F=화
+        self.assertEqual(f(11, 4, 14, 0), date(2026, 11, 3))     # 정각부터
+        self.assertEqual(f(11, 7, 12), date(2026, 11, 5))        # 토 → F=목 (금 자료는 월 14시까지 기다림)
+        self.assertEqual(f(11, 8, 23, 59), date(2026, 11, 5))    # 일 전체
+        self.assertEqual(f(11, 9, 13, 59), date(2026, 11, 5))    # 월 13:59
+        self.assertEqual(f(11, 9, 14, 1), date(2026, 11, 6))     # 월 14:01 → F=금
+        self.assertEqual(f(11, 6, 20), date(2026, 11, 5))        # 금 저녁 → F=목 (금 자료는 월 14시)
+
+
+class LateAlertRuleTest(unittest.TestCase):
+    """#74: 실제 경보 판정(alerts.late_summary + alert_flow_date). 시세는 다음 영업일 11:16 에 올라온다고 가정."""
+
+    def _late(self, last_flow, price_max, m, d, hh, mm=0):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from kic_data import alerts
+        from kic_data.util import alert_flow_date
+
+        f = alert_flow_date(datetime(2026, m, d, hh, mm, tzinfo=ZoneInfo("Asia/Seoul")))
+        flow = alerts.late_summary([("A", price_max, last_flow, None)], flow_expected=f)[0]
+        return flow["late_companies"] == 1
+
+    def test_tuesday_data_alerts_only_from_wednesday_1400(self):
+        mon, tue = date(2026, 11, 2), date(2026, 11, 3)
+        self.assertFalse(self._late(mon, tue, 11, 4, 13, 59))    # 시세(화)는 수 11:16 에 올라왔지만 14시 전이라 경보 없음
+        self.assertTrue(self._late(mon, tue, 11, 4, 14, 1))
+
+    def test_friday_data_alerts_only_from_monday_1400(self):
+        thu, fri = date(2026, 11, 5), date(2026, 11, 6)
+        for args in ((11, 7, 12), (11, 8, 12), (11, 9, 13, 59)):
+            self.assertFalse(self._late(thu, thu, *args), args)
+        self.assertFalse(self._late(thu, fri, 11, 9, 13, 59))    # 월 11:16 이후 시세(금)가 올라와도 14시 전엔 경보 없음
+        self.assertTrue(self._late(thu, fri, 11, 9, 14, 1))
+
+    def test_no_alert_when_flow_is_present(self):
+        fri = date(2026, 11, 6)
+        self.assertFalse(self._late(fri, fri, 11, 9, 14, 1))
+        self.assertFalse(self._late(fri, fri, 11, 10, 9))

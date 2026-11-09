@@ -45,16 +45,39 @@ def date_windows(start: date, end: date, days: int) -> list[tuple[date, date]]:
     return out
 
 
-def expected_flow_date(now: datetime | None = None, after: time = time(18, 30), grace_hours: float = 0) -> date:
+def expected_flow_date(now: datetime | None = None, after: time = time(18, 30)) -> date:
     """지금 네이버에 있어야 할(또는 있을 수 있는) 가장 최근 거래일 후보 = 평일만 따진 달력 날짜 (공휴일은 모름).
-    한국시간 `after`(기본 18:30, 수급 확정 뒤) 이전이면 어제, 주말이면 직전 금요일. grace_hours 만큼 더 늦춰서 본다(경보용).
+    한국시간 `after`(기본 18:30, 수급 확정 뒤) 이전이면 어제, 주말이면 직전 금요일.
     수급을 '시세 마지막 날'로 가늠하면 시세(금융위원회)가 다음 날 오전에야 올라와 그날 저녁 재확인이 헛돈다(#74)."""
     from zoneinfo import ZoneInfo
 
-    local = (now or datetime.now(ZoneInfo("Asia/Seoul"))).astimezone(ZoneInfo("Asia/Seoul")) - timedelta(hours=grace_hours)
+    local = (now or datetime.now(ZoneInfo("Asia/Seoul"))).astimezone(ZoneInfo("Asia/Seoul"))
     d = local.date() if local.time() >= after else local.date() - timedelta(days=1)
     while d.weekday() >= 5:
         d -= timedelta(days=1)
+    return d
+
+
+def _next_weekday(d: date) -> date:
+    d += timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def alert_flow_date(now: datetime | None = None, deadline: time = time(14, 0)) -> date:
+    """경보용 기준 거래일 F = '다음 영업일 deadline(KST, 기본 14:00)이 이미 지난' 가장 최근 영업일 (#74, 주말만 제외, 공휴일은 모름).
+    수급 최신일이 F 보다 앞서면 늦음. 예) 화 자료는 수 14:00 부터, 금 자료는 월 14:00 부터 경보."""
+    from zoneinfo import ZoneInfo
+
+    local = (now or datetime.now(ZoneInfo("Asia/Seoul"))).astimezone(ZoneInfo("Asia/Seoul"))
+    d = local.date()
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    while datetime.combine(_next_weekday(d), deadline, tzinfo=local.tzinfo) > local:
+        d -= timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
     return d
 
 
