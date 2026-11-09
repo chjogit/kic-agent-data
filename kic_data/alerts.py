@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from . import status
 from .config import env
+from .util import expected_flow_date
 
 MARK = "kic-alert"
 TICK_STALL_HOURS = 3
@@ -78,7 +79,10 @@ def fetch_capacity(main_conn, opinion_conn=None, opinion_configured: bool | None
 
 # ---------------------------------------------------------------- 늦은 데이터 · 실행 멈춤
 
-def late_summary(rows: list[tuple], min_days: int = LATE_MIN_DAYS) -> list[dict]:
+FLOW_ALERT_GRACE_HOURS = 36   # 수급은 시세가 올라오기 전에도 평일 달력 기준 이 시간이 지나면 있어야 함(#74)
+
+
+def late_summary(rows: list[tuple], min_days: int = LATE_MIN_DAYS, flow_expected: date | None = None) -> list[dict]:
     """[(ticker, 가격 최신일, 수급 최신일, 대차 최신일)] → 데이터별 {늦은 종목 수, 최대 늦은 일수, 대상 종목 수}.
     가격보다 min_days 일 이상 늦은 종목만 셉니다. 데이터가 아예 없는 종목은 '늦음'이 아니라 제외(없음은 최신성 표에서 다룸)."""
     out = []
@@ -88,6 +92,8 @@ def late_summary(rows: list[tuple], min_days: int = LATE_MIN_DAYS) -> list[dict]
             pmax, last = r[1], r[idx]
             if pmax is None or last is None:
                 continue
+            if name == "investor_flow" and flow_expected is not None:      # 시세가 아직 안 올라온 날도 평일이면 기다림 기한 뒤엔 늦음
+                pmax = max(pmax, flow_expected)
             lags.append((pmax - last).days)
         late = [d for d in lags if d >= min_days]
         out.append({"dataset": name, "label": label, "late_companies": len(late), "total": len(lags),
@@ -99,7 +105,7 @@ def fetch_late(conn, min_days: int = LATE_MIN_DAYS) -> list[dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(LATE_SQL)
-            return late_summary(cur.fetchall(), min_days)
+            return late_summary(cur.fetchall(), min_days, expected_flow_date(after=time(0, 0), grace_hours=FLOW_ALERT_GRACE_HOURS))
     except Exception:  # noqa: BLE001  표가 아직 없을 때 등
         conn.rollback()
         return []

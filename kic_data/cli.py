@@ -64,7 +64,7 @@ from .config import env
 from .http_util import make_session
 from .universe import (ETF_CATEGORY, ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_ETF_UNIVERSE, US_UNIVERSE,
                        etf_name_mismatch)
-from .util import date_windows, drop_incomplete_today, ymd
+from .util import date_windows, drop_incomplete_today, expected_flow_date, ymd
 
 
 def _ok(label: str, detail: str = "") -> None:
@@ -1577,17 +1577,22 @@ def cmd_investor_flows(args) -> int:
 
     only_lagging: 수급이 이미 시세 마지막 거래일까지 있는 종목은 부르지 않습니다 (자동 실행기의 저녁 재확인용).
     네이버는 그날 수급을 장 마감 뒤 몇 시간 지나 올리므로(10-29 19:20 KST 에도 미게시), 앞 종목들이 연속으로
-    못 받으면 나머지는 다음 재확인으로 넘겨 호출을 아낍니다."""
+    못 받으면 나머지는 다음 재확인으로 넘겨 호출을 아낍니다.
+
+    '받아야 할 마지막 날'은 시세 마지막 날과 평일 달력상 어제/오늘(18:30 이후) 중 늦은 쪽입니다. 시세(금융위원회)는
+    다음 날 오전에야 올라오므로 시세만 보면 그날 저녁 재확인이 모두 건너뛰어졌습니다(#74: 11/6 금 수급이 11/9 에도 없음)."""
     s = make_session()
     since = date.today() - timedelta(days=args.days)
     only_lagging = getattr(args, "only_lagging", False)
     max_pages = getattr(args, "max_pages", None) or 10   # 한 쪽 60거래일: 기본 10쪽≈600거래일. 더 먼 과거는 --max-pages 를 늘림
     bad = waiting = 0
+    target = expected_flow_date()
     with db.connect() as conn:
         latest = db.latest_price_and_flow_dates(conn, "KR") if only_lagging else {}
         for cid, ticker, *_ in db.list_companies(conn, "KR"):
             price_d, flow_d = latest.get(cid, (None, None))
-            if only_lagging and price_d and flow_d and flow_d >= price_d:
+            need = max(price_d, target) if price_d else target
+            if only_lagging and flow_d and flow_d >= need:
                 continue
             try:
                 rows = drop_incomplete_today(investor_flow.fetch_flows(s, ticker, since, max_pages=max_pages), "KR")
@@ -1597,10 +1602,10 @@ def cmd_investor_flows(args) -> int:
                 continue
             n = db.upsert_investor_flows(conn, cid, rows, "naver_trend")
             _ok(f"KR:{ticker}", f"{n}행" + (f" ({rows[0]['trade_date']}~{rows[-1]['trade_date']})" if rows else ""))
-            if only_lagging and price_d and (not rows or rows[-1]["trade_date"] < price_d):
+            if only_lagging and (not rows or rows[-1]["trade_date"] < need):
                 waiting += 1
                 if waiting >= FLOW_WAIT_STOP:
-                    print(f"[WAIT] {price_d} 수급이 네이버에 아직 없음 → 다음 재확인에서 이어서")
+                    print(f"[WAIT] {need} 수급이 네이버에 아직 없음 → 다음 재확인에서 이어서")
                     break
             else:
                 waiting = 0

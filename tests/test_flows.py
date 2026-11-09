@@ -127,7 +127,7 @@ class LendingCommandTest(unittest.TestCase):
 
 
 class InvestorFlowCommandTest(unittest.TestCase):
-    def _run(self, companies, latest, served, only_lagging=True, max_pages=None):
+    def _run(self, companies, latest, served, only_lagging=True, max_pages=None, target=date(2026, 10, 29)):
         from argparse import Namespace
         from contextlib import nullcontext
 
@@ -145,6 +145,7 @@ class InvestorFlowCommandTest(unittest.TestCase):
              mock.patch.object(cli.db, "latest_price_and_flow_dates", return_value=latest), \
              mock.patch.object(cli.db, "upsert_investor_flows", side_effect=lambda c, cid, rows, src: written.append(cid) or len(rows)), \
              mock.patch.object(cli.investor_flow, "fetch_flows", side_effect=fetch), \
+             mock.patch.object(cli, "expected_flow_date", return_value=target), \
              mock.patch.object(cli, "drop_incomplete_today", side_effect=lambda rows, market: rows):
             rc = cli.cmd_investor_flows(Namespace(days=10, only_lagging=only_lagging, max_pages=max_pages))
         self.pages = pages
@@ -173,6 +174,23 @@ class InvestorFlowCommandTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(asked), cli_wait_stop())
 
+    def test_recheck_runs_for_the_expected_trading_day_even_when_price_is_a_day_behind(self):
+        """#74: 시세(금융위원회)는 다음 날 오전에야 올라와, 시세 마지막 날만 보면 그날 저녁 재확인이 모두 건너뛰어졌다."""
+        d4, d5, d6 = date(2026, 11, 4), date(2026, 11, 5), date(2026, 11, 6)
+        companies = [(1, "000001", "a", None, None), (2, "000002", "b", None, None)]
+        latest = {1: (d5, d5), 2: (d5, d5)}                      # 시세·수급 모두 11/5 까지 (11/6 시세는 아직 안 올라옴)
+        rc, asked, written = self._run(companies, latest, lambda t: [d5, d6], target=d6)    # 금요일 저녁: 받아야 할 날 = 11/6
+        self.assertEqual((rc, asked, written), (0, ["000001", "000002"], [1, 2]))
+        rc, asked, _ = self._run(companies, latest, lambda t: [d4, d5], target=d5)           # 받아야 할 날이 이미 있으면 건너뜀
+        self.assertEqual(asked, [])
+
+    def test_waits_and_stops_when_expected_day_not_yet_posted(self):
+        d5, d6 = date(2026, 11, 5), date(2026, 11, 6)
+        companies = [(i, f"{i:06d}", str(i), None, None) for i in range(1, 8)]
+        latest = {i: (d5, d5) for i in range(1, 8)}
+        rc, asked, _ = self._run(companies, latest, lambda t: [d5], target=d6)
+        self.assertEqual((rc, len(asked)), (0, cli_wait_stop()))
+
     def test_without_flag_fetches_all(self):
         d0 = date(2026, 10, 28)
         companies = [(1, "000001", "a", None, None), (2, "000002", "b", None, None)]
@@ -184,3 +202,29 @@ def cli_wait_stop() -> int:
     from kic_data import cli
 
     return cli.FLOW_WAIT_STOP
+
+
+class ExpectedFlowDateTest(unittest.TestCase):
+    def _d(self, y, m, d, hh, mm=0, grace=0, after=None):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from kic_data.util import expected_flow_date
+
+        now = datetime(y, m, d, hh, mm, tzinfo=ZoneInfo("Asia/Seoul"))
+        return expected_flow_date(now, grace_hours=grace) if after is None else expected_flow_date(now, after=after, grace_hours=grace)
+
+    def test_evening_weekday_expects_today_and_daytime_expects_previous_weekday(self):
+        self.assertEqual(self._d(2026, 11, 6, 19), date(2026, 11, 6))       # 금 저녁 → 금
+        self.assertEqual(self._d(2026, 11, 6, 14), date(2026, 11, 5))       # 금 낮 → 목
+        self.assertEqual(self._d(2026, 11, 9, 14), date(2026, 11, 6))       # 월 낮 → 금 (11/9 PM 시연 시점)
+        self.assertEqual(self._d(2026, 11, 9, 19), date(2026, 11, 9))
+
+    def test_weekend_expects_friday(self):
+        self.assertEqual(self._d(2026, 11, 7, 20), date(2026, 11, 6))
+        self.assertEqual(self._d(2026, 11, 8, 3), date(2026, 11, 6))
+
+    def test_alert_grace_waits_36_hours_before_calling_it_late(self):
+        from datetime import time
+        self.assertEqual(self._d(2026, 11, 9, 14, grace=36, after=time(0, 0)), date(2026, 11, 6))    # 월 14시 → 토 02시 → 금: 11/6 수급 없으면 경보
+        self.assertEqual(self._d(2026, 11, 3, 8, grace=36, after=time(0, 0)), date(2026, 10, 30))    # 화 오전엔 월 수급을 아직 기대하지 않음

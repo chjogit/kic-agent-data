@@ -61,6 +61,16 @@ def test_late_summary_counts_only_lagging_and_skips_missing():
     assert (lend["late_companies"], lend["total"]) == (1, 2)
 
 
+def test_late_summary_uses_expected_flow_date_when_price_is_behind():
+    """#74: 시세가 아직 안 올라온(11/5) 월요일 오후, 평일 달력상 11/6 수급이 없으면 늦음. 대차는 영향 없음."""
+    d5, d6 = date(2026, 11, 5), date(2026, 11, 6)
+    rows = [("A", d5, d5, d5), ("B", d5, d6, d5)]
+    flow, lend = alerts.late_summary(rows, flow_expected=d6)
+    assert (flow["late_companies"], flow["total"], flow["max_days_late"]) == (1, 2, 1) and lend["late_companies"] == 0
+    flow, _ = alerts.late_summary(rows)                              # 기준일 없으면 예전 동작(시세 기준) — 늦음 0
+    assert flow["late_companies"] == 0
+
+
 def test_tick_status():
     assert alerts.tick_status(NOW - timedelta(hours=1), NOW, 3)["stalled"] is False
     assert alerts.tick_status(NOW - timedelta(hours=5), NOW, 3)["stalled"] is True
