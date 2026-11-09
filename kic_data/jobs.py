@@ -321,7 +321,7 @@ class DbState:
         try:  # 품질 기록(sql/017)은 실패해도 수집 기록·다음 작업에 영향을 주지 않게
             self._run(lambda conn: quality.record_job(conn, job, status=status, seconds=seconds, detail=detail,
                                                       log=log, finished=finished))
-            self._run(lambda conn: quality.resolve_stale(conn, JOB_BY_NAME))
+            self._run(lambda conn: quality.resolve_stale(conn, {*JOB_BY_NAME, *quality.EXTERNAL_API_OF_JOB}))
         except Exception:  # noqa: BLE001
             try:
                 self.conn.rollback()

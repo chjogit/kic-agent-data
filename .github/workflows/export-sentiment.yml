@@ -1,0 +1,65 @@
+name: kic-export-sentiment
+# 감성 분석을 끝낸 뒤 종목×출처×기간 창(14·7·3·1일) 집계를 Object Storage `sentiment/latest/` 에 덮어씁니다 (#71, specs/sentiment-export.md).
+# 하루 4번: 09·14·18·21시 KST = UTC 00·05·09·12시 (GitHub 예약은 몇 분~수십 분 늦을 수 있어, 정시가 필요하면
+# cron-job.org 에서 이 워크플로의 workflow_dispatch 를 같은 시각에 호출하세요. collect.yml 과 같은 방식).
+# 안전장치: 저장소 변수 SENTIMENT_EXPORT_UPLOAD 가 'true' 가 아니면 예약 실행은 dry-run(집계·파일 만들기만, 업로드 없음)입니다.
+# 첫 실제 업로드는 PM 승인 뒤 변수를 켜거나, 수동 실행에서 dry_run 을 끄고 실행하세요. 비밀값은 출력하지 않습니다.
+on:
+  schedule:
+    - cron: "0 0,5,9,12 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "켜 두면 집계·파일 만들기만 (업로드 없음)"
+        type: boolean
+        default: true
+concurrency:
+  group: kic-export-sentiment
+  cancel-in-progress: false
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  OPINION_DATABASE_URL: ${{ secrets.OPINION_DATABASE_URL }}   # 블로그·카페 전용 프로젝트(kic-opinion). 없으면 메인 하나로 동작
+  # NEON_STORAGE_* 이름의 secret 을 우선 쓰고, 없으면 AWS_* 이름의 secret 을 씁니다. (archive-dart.yml 과 같은 저장소)
+  NEON_STORAGE_ENDPOINT: ${{ secrets.NEON_STORAGE_ENDPOINT || secrets.AWS_ENDPOINT_URL_S3 }}
+  NEON_STORAGE_BUCKET: ${{ secrets.NEON_STORAGE_BUCKET || 'disclosure' }}
+  NEON_STORAGE_ACCESS_KEY_ID: ${{ secrets.NEON_STORAGE_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY_ID }}
+  NEON_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.NEON_STORAGE_SECRET_ACCESS_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+  NEON_STORAGE_REGION: ${{ secrets.NEON_STORAGE_REGION || secrets.AWS_REGION }}
+  EXPECTED_STORAGE_BRANCH: br-polished-frog-b5an5v6t
+  PYTHONIOENCODING: utf-8
+  PYTHONUNBUFFERED: "1"
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 저장소 브랜치 확인 (다르면 중단)
+        run: |
+          if [ -z "$NEON_STORAGE_ENDPOINT" ]; then
+            echo "NEON_STORAGE_ENDPOINT 가 비어 있습니다. 업로드하지 않고 중단합니다."; exit 1
+          fi
+          case "$NEON_STORAGE_ENDPOINT" in
+            *"$EXPECTED_STORAGE_BRANCH"*) echo "엔드포인트 브랜치 일치: $EXPECTED_STORAGE_BRANCH" ;;
+            *) echo "엔드포인트에 $EXPECTED_STORAGE_BRANCH 가 없습니다. 업로드하지 않고 중단합니다."; exit 1 ;;
+          esac
+      - run: pip install -r requirements.txt
+      - run: python -m kic_data.cli apply-schema
+      - name: export-sentiment
+        env:
+          MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+          UPLOAD_ENABLED: ${{ vars.SENTIMENT_EXPORT_UPLOAD }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          args=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "$MANUAL_DRY_RUN" = "true" ]; then args="--dry-run"; fi
+          elif [ "$UPLOAD_ENABLED" != "true" ]; then
+            args="--dry-run"
+          fi
+          echo "실행: export-sentiment $args"
+          python -m kic_data.cli export-sentiment $args

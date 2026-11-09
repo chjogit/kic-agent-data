@@ -89,6 +89,7 @@ GitHub Actions `collect.yml` 이 매시간 `tick` 을 실행합니다 (cron-job.
 | 매주 | 업종·발행주식수 |
 | 1회 | 과거분(시세·지수·ETF·거시 5년, 공시 1년, 뉴스·블로그·카페 30일, 검색 관심도 1년, 수급 1년, 국내 재무 5년, 대주주·경영진 기사) |
 | 수동 | DART 원문 Object Storage 보관 (`archive-dart.yml`, 기본 dry-run) |
+| 하루 4번 | 감성 집계 Object Storage 내보내기 (`export-sentiment.yml`, 09·14·18·21시 KST, 승인 전 dry-run — `docs/SENTIMENT_EXPORT.md`) |
 
 ## 4. 알려진 공백·한계
 

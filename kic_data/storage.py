@@ -50,6 +50,21 @@ class S3Store:
     def get(self, key: str) -> bytes:
         return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
 
+    def list(self, prefix: str) -> list[str]:
+        """prefix 로 시작하는 객체 키 전부 (1,000개 단위로 이어서)."""
+        keys, token = [], None
+        while True:
+            kw = {"Bucket": self.bucket, "Prefix": prefix, **({"ContinuationToken": token} if token else {})}
+            r = self.client.list_objects_v2(**kw)
+            keys += [o["Key"] for o in r.get("Contents") or []]
+            token = r.get("NextContinuationToken") if r.get("IsTruncated") else None
+            if not token:
+                return keys
+
+    def delete(self, key: str) -> None:
+        """객체 하나 삭제. 덮어쓰기 범위 확인은 호출 쪽(sentiment_export._guard) 몫."""
+        self.client.delete_object(Bucket=self.bucket, Key=key)
+
 
 def get_store():
     """설정이 모두 있으면 S3Store, 없으면 None."""
