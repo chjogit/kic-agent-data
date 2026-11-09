@@ -115,8 +115,8 @@ print(df.head())
 
 ### 7-1. DB 읽기 전용 역할
 1. [`sql/manual/kic_opinion_readonly_role.sql`](../sql/manual/kic_opinion_readonly_role.sql) 을 엽니다(자동 실행되지 않는 수동 파일).
-2. Neon 콘솔 → kic-opinion 프로젝트 → SQL 편집기(소유자 계정)에서 `<비밀번호>` 자리를 채워 실행합니다. 팀원별로 역할 이름(`opinion_ro_이름`)을 바꿔 만들면 폐기가 쉽습니다.
-3. 콘솔의 Connect(접속) 창에서 만든 역할을 골라 접속 문자열을 복사해 팀원에게 개인 메시지로 전달합니다(팀원은 `OPINION_DATABASE_URL` 에 넣음).
+2. Neon 콘솔 → kic-opinion 프로젝트 → SQL 편집기(소유자 계정)에서 `<비밀번호>` 자리를 채워 실행합니다. 팀원별로 역할 이름(`opinion_reader_이름`)을 바꿔 만들면 폐기가 쉽습니다.
+3. 콘솔의 Connect(접속) 창에서 만든 역할을 골라 접속 문자열을 복사해 팀원에게 개인 메시지로 전달합니다(관리자가 `OPINION_READONLY_DATABASE_URL` 값을 팀원에게 개인 메시지로 전달하고, 팀원은 자기 `.env` 의 `OPINION_DATABASE_URL` 로 사용).
 4. 확인: 그 문자열로 `select count(*) from core.company` 는 성공, `insert` 는 거부돼야 합니다.
 5. 폐기: 같은 파일 맨 아래 폐기 구문을 소유자 역할로 실행합니다.
 
