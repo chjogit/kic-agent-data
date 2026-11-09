@@ -3,6 +3,7 @@
 작성일: 2026-11-02 · 조회 시각: **2026-11-02 12:02 KST** (메인·kic-opinion), 문서·용량·보관 수치는 **14일 첫 폐기 뒤 재조회(2026-11-02 오후 KST)** 값으로 보정
 근거: 실DB **읽기 전용** 조회(`default_transaction_read_only=on`, 메인·kic-opinion 두 프로젝트), `python -m kic_data.cli status` 결과(`OPINION_DATABASE_URL` 설정 상태), 프로젝트 코드(`kic-agent-data` origin/main `ee70c31`, PR #50 병합본)
 ※ 문서(뉴스·블로그·카페·유튜브 댓글) 건수·용량·보관 표는 14일 폐기 실행 **뒤** 실DB 읽기 전용 재조회 값입니다. 시세·재무 등 다른 표는 12:02 조회 값입니다.
+※ 팀원용 kic-opinion 접속 방법: [KIC_OPINION_ACCESS.md](KIC_OPINION_ACCESS.md)
 ※ 최신 수치는 `python -m kic_data.cli status` (읽기 전용) 로 언제든 다시 확인할 수 있습니다.
 
 ## 1. 수집 완료 (DB 반영 확인됨)
