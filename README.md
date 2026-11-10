@@ -7,6 +7,7 @@ Neon(Postgres + pgvector)에 국내·해외 주식 데이터를 모으는 VS Cod
 
 > **자동 수집 (10-26):** GitHub 비공개 저장소에 올리면 GitHub Actions 가 2시간마다 수집합니다 (서버·PC 불필요).
 > 설정 방법: [`docs/AUTO_RUN.md`](docs/AUTO_RUN.md). 웹 대시보드를 서버에 올리려면 [`docs/DEPLOY_VERCEL.md`](docs/DEPLOY_VERCEL.md) (선택).
+> Cloudflare Python Worker 로 조회 전용 대시보드를 올리려면 [`docs/DEPLOY_CLOUDFLARE.md`](docs/DEPLOY_CLOUDFLARE.md) (선택).
 > 작업 스케줄러(`scripts/*.bat`)와는 둘 중 하나만 쓰세요.
 
 ## 한눈에 보는 구조 (그림)
