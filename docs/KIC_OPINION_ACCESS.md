@@ -32,7 +32,7 @@
 |---|---|---|
 | `dart/{분류}/{연도}/{접수번호}.zip` | DART 공시 원문(사업보고서 등 A·B 분류) | 수집 때 추가 |
 | `sentiment/latest/` (첫 업로드 승인 전에는 아직 없음) | 감성 집계 — 종목 × 출처 × 기간 창(14·7·3·1일). `window=14d.json`·`.csv` 등 + `_meta.json` | 매일 09·14·18·21시(KST) **덮어씀**. `_meta.json` 이 새 것이면 나머지도 모두 새 것 |
-| `financials/` | DART 전체 재무제표 5년치(연결·별도, 숫자만) Parquet | 수집 후 생김(#77) |
+| `financials/` | DART 전체 재무제표 5년치(연결·별도, 숫자만) Parquet. `fs/year=YYYY/report=1101x/part-0000.parquet`, 열 설명 `_meta.json`, 못 받은 목록 `_missing.csv` | 수집 때 추가(#77) |
 
 ## 3. 접속 정보 받기
 1. 관리자(CH)에게 "kic-opinion 읽기 권한"을 요청합니다.
@@ -86,17 +86,31 @@ for o in s3.list_objects_v2(Bucket=bucket, Prefix="sentiment/latest/").get("Cont
     print(o["Key"], o["Size"])
 ```
 
-### 4-3. 재무제표 Parquet 읽기 (수집 후)
-> 아직 검증 전입니다(#77 로 `financials/` 가 생긴 뒤 확인). 아래 키 이름은 예시입니다.
+### 4-3. 재무제표 Parquet 읽기
+`financials/` 는 DART 전체 재무제표 5년치(연결 CFS·별도 OFS, 숫자만)입니다.
+
+| 무엇 | 경로 |
+|---|---|
+| 데이터 | `financials/fs/year=YYYY/report=1101x/part-0000.parquet` (보고서: 11011 사업·11012 반기·11013 1분기·11014 3분기) |
+| 열 설명 | `financials/_meta.json` 의 `columns` |
+| 못 받은 목록 | `financials/_missing.csv` (회사·연도·보고서·구분·사유) |
 
 ```python
 import io
+import json
 import pandas as pd
-# 위 s3·bucket 그대로 사용
-key = "financials/fs/year=2024/report=11011/part-0.parquet"     # 실제 파일 이름은 financials/_meta.json 참고
+# 위 4-2 의 s3·bucket 그대로 사용
+meta = json.loads(s3.get_object(Bucket=bucket, Key="financials/_meta.json")["Body"].read())
+print([c["name"] if isinstance(c, dict) else c for c in meta["columns"]])
+key = "financials/fs/year=2024/report=11011/part-0000.parquet"
 df = pd.read_parquet(io.BytesIO(s3.get_object(Bucket=bucket, Key=key)["Body"].read()))
-print(df.head())
+print(df[df["stock_code"] == "005930"].head())
 ```
+쓸 때 주의:
+- 반기·1분기·3분기의 손익·현금흐름은 **DART 원 응답 그대로의 누적 값**입니다(`thstrm_add_amount`). 메인 DB 의 단독 분기 값(누적에서 뺀 값)과 다를 수 있습니다.
+- 보험업 등은 전체 재무제표의 자산·부채 행이 '주요계정'과 다를 수 있습니다. **자본총계·자본과부채총계**로 검산하세요.
+- 아직 공시되지 않은 2026 사업보고서와 2026 3분기는 0행입니다. 빠진 회사·연도는 `_missing.csv` 에서 확인하세요.
+
 필요 패키지: `pip install psycopg[binary] python-dotenv boto3 pandas pyarrow`
 
 ## 5. 지켜 주세요
@@ -116,18 +130,20 @@ print(df.head())
 ### 7-1. DB 읽기 전용 역할
 1. [`sql/manual/kic_opinion_readonly_role.sql`](../sql/manual/kic_opinion_readonly_role.sql) 을 엽니다(자동 실행되지 않는 수동 파일).
 2. Neon 콘솔 → kic-opinion 프로젝트 → SQL 편집기(소유자 계정)에서 `<비밀번호>` 자리를 채워 실행합니다. 팀원별로 역할 이름(`opinion_reader_이름`)을 바꿔 만들면 폐기가 쉽습니다.
-3. 콘솔의 Connect(접속) 창에서 만든 역할을 골라 접속 문자열을 복사해 팀원에게 개인 메시지로 전달합니다(관리자가 `OPINION_READONLY_DATABASE_URL` 값을 팀원에게 개인 메시지로 전달하고, 팀원은 자기 `.env` 의 `OPINION_DATABASE_URL` 로 사용).
+3. 콘솔의 Connect(접속) 창에서 만든 역할을 골라 접속 문자열을 복사해 팀원에게 개인 메시지로 전달합니다(이름이 두 가지인 이유: 관리자 PC 에서는 소유자용 `OPINION_DATABASE_URL` 과 구분하려고 읽기 전용을 `OPINION_READONLY_DATABASE_URL` 로 저장해 두고, 팀원은 그 값을 받아 자기 `.env` 의 `OPINION_DATABASE_URL` 로 씁니다. 팀원은 `OPINION_DATABASE_URL` 하나만 알면 됩니다.) 이미 만들어 둔 읽기 전용 계정은 `opinion_reader` 입니다(비밀번호·접속 문자열은 적지 않음)..
 4. 확인: 그 문자열로 `select count(*) from core.company` 는 성공, `insert` 는 거부돼야 합니다.
 5. 폐기: 같은 파일 맨 아래 폐기 구문을 소유자 역할로 실행합니다.
 
 ### 7-2. Object Storage 읽기 전용 키 (`storage:read`)
-Neon 콘솔 화면 이름은 바뀔 수 있으니 아래는 일반 순서입니다.
-1. Neon 콘솔 → kic-opinion 프로젝트 → Storage(저장소) → 자격 증명(Credentials)에서 새로 만들기.
-2. 권한(스코프)에서 **`storage:read`** 만 고르고 쓰기·삭제 권한은 선택하지 않습니다. 이름은 팀원별(예: `read-이름`)로 붙입니다.
-3. 만들면 접근 키·비밀 키가 **한 번만** 보입니다. 바로 복사해 팀원에게 개인 메시지로 전달하고 화면은 닫습니다.
-4. 함께 전달할 값: 엔드포인트, 버킷 이름, 리전(3절의 환경변수 이름 그대로).
-5. 폐기·교체: 같은 화면에서 해당 자격 증명을 폐기(revoke)하거나 회전(rotate)합니다.
-6. 키가 읽기 전용인지 확인: 4-2 로 목록·읽기는 되고, 올리기·삭제는 거부돼야 합니다.
+1. Neon 콘솔 → kic-opinion 프로젝트 → **Settings → Credentials → Create credential**, 또는 Neon CLI `neon credentials create --scope storage:read` 로 만듭니다(콘솔 Storage 화면 안에는 이 메뉴가 없습니다).
+2. 권한(스코프)은 **`storage:read`** 만 고르고 쓰기·삭제는 선택하지 않습니다. 이름은 팀원별(예: `read-이름`)로 붙입니다.
+3. 만들면 값이 **한 번만** 보입니다. 어느 값을 어디에 쓰는지:
+   - **Access Key ID = `token_id`** (`nak_live_…` 로 시작). `api_token` 이 아닙니다.
+   - **Secret Access Key = `s3_secret_access_key`**.
+4. 바로 복사해 팀원에게 개인 메시지로 전달하고 화면은 닫습니다. 함께 전달할 값: 엔드포인트, 버킷 이름, 리전(3절의 환경변수 이름 그대로).
+5. 폐기·교체: 같은 Credentials 화면에서 해당 자격 증명을 폐기(revoke)하거나 회전(rotate)합니다.
+6. 읽기 전용 확인: 4-2 로 목록·읽기는 되고, 올리기·삭제는 거부(AccessDenied)돼야 합니다.
+7. 이미 만들어 둔 키 `team-read-only`(storage:read 전용)가 있습니다. 값은 이 문서에 적지 않으며 관리자 `.env` 에만 있습니다.
 
 ### 7-3. 확인
 4-1·4-2 예제를 읽기 전용 정보로 실행해 봅니다(값은 화면·로그에 남기지 않습니다).
