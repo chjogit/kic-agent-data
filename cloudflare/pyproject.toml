@@ -1,0 +1,15 @@
+[project]
+name = "kic-agent-data-worker"
+version = "0.1.0"
+description = "kic-agent-data 조회 전용 대시보드 (Cloudflare Python Worker)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "pg8000",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+]

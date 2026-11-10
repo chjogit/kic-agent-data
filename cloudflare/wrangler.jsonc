@@ -1,0 +1,10 @@
+{
+  "name": "kic-agent-data",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-11-10",
+  "compatibility_flags": ["python_workers"],
+  "hyperdrive": [
+    { "binding": "HYPERDRIVE_MAIN", "id": "9809b1f16c174466bfd1a8b4f37e6b30" },
+    { "binding": "HYPERDRIVE_OPINION", "id": "13241a26c23a4b75a6ed650ac4a1814a" }
+  ]
+}

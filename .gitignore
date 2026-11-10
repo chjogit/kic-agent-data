@@ -7,3 +7,12 @@ __pycache__/
 wallet/
 logs/
 status.json
+
+# Cloudflare Worker 빌드 복사본 (scripts/build_worker.py 가 생성)
+cloudflare/src/kic_data/
+cloudflare/src/sql/
+cloudflare/src/web/
+cloudflare/src/main.py
+cloudflare/.venv/
+cloudflare/python_modules/
+cloudflare/.wrangler/
