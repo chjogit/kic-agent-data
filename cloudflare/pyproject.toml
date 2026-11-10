@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "pg8000",
+    "tzdata",
 ]
 
 [dependency-groups]

@@ -15,7 +15,13 @@ IGNORE = shutil.ignore_patterns("collectors", "__pycache__", "*.pyc", "tests")
 
 
 def build(dest: Path = DEFAULT_DEST, root: Path = ROOT) -> Path:
-    dest = Path(dest)
+    dest = Path(dest).resolve()
+    root = Path(root).resolve()
+    sources = [root / n for n in ("kic_data", "sql", "web", "main.py")]
+    for src in sources:
+        # 출력 폴더가 저장소 루트이거나 원본 폴더를 품거나 그 안이면, 복사 전에 원본을 지우게 되므로 거부
+        if dest == root or dest == src or src in dest.parents or dest in src.parents:
+            raise ValueError(f"출력 폴더가 원본과 겹칩니다: {dest}")
     dest.mkdir(parents=True, exist_ok=True)
     for name in ("kic_data", "sql", "web"):
         target = dest / name

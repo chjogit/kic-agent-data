@@ -9,12 +9,27 @@ scripts/build_worker.py 가 kic_data, sql, web, main.py 를 이 폴더로 복사
 import asyncio
 import os
 
-import asgi
+import anyio.to_thread
 from workers import WorkerEntrypoint
+
+try:   # 현재 Workers 런타임은 workers.asgi, 예전 방식은 최상위 asgi
+    from workers import asgi
+except ImportError:
+    import asgi
 
 import main
 from kic_data import cf_db, db, jobs
 from kic_data.worker_guard import guard  # noqa: F401  (테스트·재사용용으로 여기서도 노출)
+
+
+
+async def _run_inline(func, *args, **_kw):
+    """Pyodide(Workers)에는 스레드가 없어 FastAPI 의 동기 엔드포인트(anyio 스레드풀)가 실패합니다.
+    그래서 호출한 자리에서 바로 실행합니다. 요청은 이미 _LOCK 으로 직렬화돼 있어 추가 비용이 없습니다."""
+    return func(*args)
+
+
+anyio.to_thread.run_sync = _run_inline   # starlette.concurrency.run_in_threadpool 이 호출 때마다 이 속성을 찾음
 
 _APP = guard(main.app)
 _LOCK = None
@@ -57,7 +72,7 @@ def configure(env) -> None:
         os.environ["DASHBOARD_PASSWORD"] = password
     else:
         os.environ.pop("DASHBOARD_PASSWORD", None)   # 없으면 guard 가 503 으로 닫음
-    jobs.ensure_schema = lambda conn: True   # 읽기 전용 계정은 DDL 불가
+    jobs.ensure_schema = lambda conn: False   # 읽기 전용 계정은 DDL 불가 (False = 스키마를 새로 만들지 않았음)
 
 
 class Default(WorkerEntrypoint):
