@@ -11,7 +11,7 @@ import hashlib
 import json
 from datetime import date, datetime, timedelta, timezone
 
-from . import status
+from . import db, status
 from .config import env
 
 MARK = "kic-alert"
@@ -58,15 +58,8 @@ def _db_size(conn) -> int | None:
 
 
 def connect_opinion():
-    """kic-opinion 읽기 전용 연결. 접속 정보(환경변수)가 없으면 None."""
-    url = env(OPINION_URL_ENV)
-    if not url:
-        return None
-    import psycopg
-
-    conn = psycopg.connect(url, connect_timeout=30)
-    conn.read_only = True
-    return conn
+    """kic-opinion 읽기 전용 연결. 접속 정보(환경변수)가 없으면 None. db.connect_opinion 을 거치므로 주입된 팩토리도 따릅니다."""
+    return db.connect_opinion(read_only=True)
 
 
 def fetch_capacity(main_conn, opinion_conn=None, opinion_configured: bool | None = None) -> list[dict]:

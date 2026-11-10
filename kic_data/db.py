@@ -7,6 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from typing import Any, Callable
 
 from .config import env
 
@@ -16,7 +17,21 @@ ONLY_TICKERS: ContextVar[frozenset | None] = ContextVar("ONLY_TICKERS", default=
 SQL_DIR = Path(__file__).resolve().parent.parent / "sql"
 
 
+# Cloudflare Worker 등이 psycopg 대신 쓸 연결 팩토리를 주입하는 자리. None 이면 기본(psycopg)
+_MAIN_FACTORY: Callable[[], Any] | None = None
+_OPINION_FACTORY: Callable[[bool], Any] | None = None
+
+
+def use_factories(main: Callable[[], Any] | None, opinion: Callable[[bool], Any] | None) -> None:
+    """main() → 메인 연결, opinion(read_only) → kic-opinion 연결(없으면 None). None 을 주면 기본 psycopg 동작으로 되돌립니다."""
+    global _MAIN_FACTORY, _OPINION_FACTORY
+    _MAIN_FACTORY = main
+    _OPINION_FACTORY = opinion
+
+
 def connect():
+    if _MAIN_FACTORY is not None:
+        return _MAIN_FACTORY()
     import psycopg
 
     # keepalive: 수집 API 를 오래 기다리는 동안 쉬는 연결이 중간에서 끊기지 않게
@@ -30,6 +45,8 @@ OPINION_SOURCES = ("naver_blog", "naver_cafe")
 
 def connect_opinion(read_only: bool = False):
     """kic-opinion 연결. 접속 정보(환경변수)가 없으면 None → 호출 쪽이 메인 연결로 대체합니다."""
+    if _OPINION_FACTORY is not None:
+        return _OPINION_FACTORY(read_only)
     url = env(OPINION_URL_ENV)
     if not url:
         return None
