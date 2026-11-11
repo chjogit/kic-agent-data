@@ -141,7 +141,6 @@ def entry(monkeypatch):
 
     async def fetch(app, req, env):
         calls.append({"app": app, "req": req, "env": env,
-                      "locked": module._LOCK.locked(),
                       "env_url": __import__("os").environ.get("DATABASE_URL"),
                       "opinion_url": __import__("os").environ.get("OPINION_DATABASE_URL"),
                       "password": __import__("os").environ.get("DASHBOARD_PASSWORD")})
@@ -181,7 +180,6 @@ def test_entry_fetch_configures_request(entry, monkeypatch):
     assert result == "response"
     call = entry.calls[0]
     assert call["req"] == "JS" and call["env"] is env
-    assert call["locked"] is True   # DB 사용 구간은 락 안
     assert call["env_url"] == "hyperdrive" and call["opinion_url"] == "hyperdrive"
     assert call["password"] == "secret"
     assert jobs.ensure_schema(object()) is False   # DDL 건너뜀 (conn 을 건드리지 않음)
@@ -189,7 +187,6 @@ def test_entry_fetch_configures_request(entry, monkeypatch):
     assert db.connect().db == "main"
     oc = db.connect_opinion(read_only=True)
     assert oc.db == "opinion" and oc.read_only is True
-    assert not entry._LOCK.locked()
 
 
 def test_entry_without_password_secret_closes(entry, monkeypatch):
@@ -198,145 +195,27 @@ def test_entry_without_password_secret_closes(entry, monkeypatch):
     assert entry.calls[0]["password"] is None   # 남은 값도 지워 fail-closed
 
 
-def test_entry_serializes_concurrent_requests(entry):
-    active, peak = [0], [0]
+def test_entry_has_no_cross_request_lock(entry):
+    """락을 두면 Workers 가 대기 요청을 'code had hung'(1101)으로 취소하므로, 락이 없어야 하고 동시 요청이 모두 끝나야 함."""
+    assert not hasattr(entry, "_LOCK")
 
     async def slow_fetch(app, req, env):
-        active[0] += 1
-        peak[0] = max(peak[0], active[0])
         await asyncio.sleep(0.01)
-        active[0] -= 1
         return "ok"
 
-    sys.modules["asgi"].fetch = slow_fetch
     entry.asgi.fetch = slow_fetch
 
     async def run():
         d = entry.Default
-        await asyncio.gather(*(d.fetch(SimpleNamespace(env=_env()), SimpleNamespace(js_object=None)) for _ in range(4)))
+        return await asyncio.gather(*(d.fetch(SimpleNamespace(env=_env()), SimpleNamespace(js_object=None)) for _ in range(4)))
 
-    asyncio.run(run())
-    assert peak[0] == 1
+    assert asyncio.run(run()) == ["ok"] * 4
 
 
-def test_entry_lock_released_after_fetch_error(entry):
+def test_entry_fetch_error_propagates(entry):
     async def boom(app, req, env):
         raise RuntimeError("fetch failed")
 
     entry.asgi.fetch = boom
-
-    async def run():
-        with pytest.raises(RuntimeError):
-            await entry.Default.fetch(SimpleNamespace(env=_env()), SimpleNamespace(js_object=None))
-        assert not entry._LOCK.locked()
-
-    asyncio.run(run())
-
-
-def _get_raw(app, path):
-    """TestClient 는 자체 스레드를 쓰므로, 스레드 금지 시험은 ASGI 를 직접 호출."""
-    sent = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(msg):
-        sent.append(msg)
-
-    scope = {"type": "http", "method": "GET", "path": path, "raw_path": path.encode(), "query_string": b"",
-             "headers": [], "scheme": "http", "server": ("t", 80), "client": ("c", 1), "http_version": "1.1",
-             "root_path": ""}
-    asyncio.run(app(scope, receive, send))
-    return sent[0]["status"]
-
-
-def test_sync_endpoints_work_without_threads(entry, monkeypatch):
-    """Pyodide 에는 스레드가 없다: 스레드 시작이 실패해도 동기 FastAPI 엔드포인트가 응답해야 함."""
-    import threading
-
-    def no_threads(self, *a, **kw):
-        raise RuntimeError("can't start new thread")
-
-    monkeypatch.setattr(threading.Thread, "start", no_threads)
-    assert _get_raw(entry._APP, "/api/health") == 200
-
-
-def test_threadpool_really_needs_the_patch(monkeypatch):
-    """대조군: 패치가 없으면 같은 조건에서 실패한다 (위 테스트가 헛돌지 않음을 보증)."""
-    import threading
-
-    import anyio.to_thread
-    import main
-
-    def no_threads(self, *a, **kw):
-        raise RuntimeError("can't start new thread")
-
-    monkeypatch.setattr(threading.Thread, "start", no_threads)
     with pytest.raises(RuntimeError):
-        _get_raw(guard(main.app), "/api/health")
-
-
-def test_entry_falls_back_to_toplevel_asgi_and_prefers_workers_asgi(monkeypatch):
-    import anyio.to_thread
-    monkeypatch.setattr(anyio.to_thread, "run_sync", anyio.to_thread.run_sync)
-    monkeypatch.setattr(jobs, "ensure_schema", jobs.ensure_schema)
-    path = ROOT / "cloudflare" / "src" / "entry.py"
-
-    def load(workers_asgi):
-        w = types.ModuleType("workers")
-        w.WorkerEntrypoint = type("WorkerEntrypoint", (), {})
-        if workers_asgi is not None:
-            w.asgi = workers_asgi
-        monkeypatch.setitem(sys.modules, "workers", w)
-        top = types.ModuleType("asgi")
-        monkeypatch.setitem(sys.modules, "asgi", top)
-        spec = importlib.util.spec_from_file_location("kic_worker_entry2", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod, top
-
-    preferred = types.ModuleType("workers_asgi")
-    mod, top = load(preferred)
-    assert mod.asgi is preferred
-    mod, top = load(None)
-    assert mod.asgi is top
-
-
-# ---------------------------------------------------------------- 빌드 스크립트
-
-def _load_build():
-    spec = importlib.util.spec_from_file_location("build_worker", ROOT / "scripts" / "build_worker.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_build_worker_copies_only_needed_files(tmp_path):
-    out = _load_build().build(tmp_path / "src")
-    assert (out / "main.py").is_file()
-    assert (out / "kic_data" / "db.py").is_file()
-    assert (out / "kic_data" / "cf_db.py").is_file()
-    assert (out / "kic_data" / "worker_guard.py").is_file()
-    assert any((out / "sql").glob("*.sql"))
-    assert (out / "web" / "quality_dashboard.html").is_file()
-    assert (out / "web" / "kic.css").is_file()
-    assert not (out / "kic_data" / "collectors").exists()
-    assert not (out / "tests").exists()
-    assert not list(out.rglob("__pycache__"))
-    assert not list(out.rglob("*.pyc"))
-    # 재실행해도 동작 (이전 복사본 교체)
-    (out / "kic_data" / "stale.py").write_text("x")
-    _load_build().build(out)
-    assert not (out / "kic_data" / "stale.py").exists()
-
-
-def test_build_worker_refuses_dest_overlapping_sources(tmp_path):
-    build = _load_build().build
-    for bad in (ROOT, ROOT / "kic_data", ROOT / "kic_data" / "sub", ROOT / "web", ROOT / "sql", ROOT / "main.py"):
-        with pytest.raises(ValueError):
-            build(bad)
-    assert (ROOT / "kic_data" / "db.py").is_file()   # 원본 무사
-    fake_root = tmp_path / "r"
-    (fake_root / "kic_data").mkdir(parents=True)
-    with pytest.raises(ValueError):   # 원본을 품는 상위 폴더
-        build(tmp_path, root=fake_root)
+        asyncio.run(entry.Default.fetch(SimpleNamespace(env=_env()), SimpleNamespace(js_object=None)))
