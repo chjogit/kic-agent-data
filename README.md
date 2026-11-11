@@ -6,8 +6,9 @@ Neon(Postgres + pgvector)에 국내·해외 주식 데이터를 모으는 VS Cod
 스키마·DB 배치·환경변수·보관 정책이 바뀐 내역은 [`docs/DATA_CHANGES.md`](docs/DATA_CHANGES.md) 에 날짜순으로 기록합니다(OpenResearch 와 같은 내용을 공유).
 
 > **자동 수집 (10-26):** GitHub 비공개 저장소에 올리면 GitHub Actions 가 2시간마다 수집합니다 (서버·PC 불필요).
-> 설정 방법: [`docs/AUTO_RUN.md`](docs/AUTO_RUN.md). 웹 대시보드를 서버에 올리려면 [`docs/DEPLOY_VERCEL.md`](docs/DEPLOY_VERCEL.md) (선택).
-> Cloudflare Python Worker 로 조회 전용 대시보드를 올리려면 [`docs/DEPLOY_CLOUDFLARE.md`](docs/DEPLOY_CLOUDFLARE.md) (선택).
+> 설정 방법: [`docs/AUTO_RUN.md`](docs/AUTO_RUN.md).
+> 조회 전용 웹 대시보드는 Cloudflare Python Worker 로 올립니다 → [`docs/DEPLOY_CLOUDFLARE.md`](docs/DEPLOY_CLOUDFLARE.md) (선택). 수집은 이 Worker 가 아니라 GitHub Actions 가 합니다.
+> 이전 방식인 Vercel 배포(수집 실행 포함)는 [`docs/DEPLOY_VERCEL.md`](docs/DEPLOY_VERCEL.md) 에 남겨 두었습니다.
 > 작업 스케줄러(`scripts/*.bat`)와는 둘 중 하나만 쓰세요.
 
 ## 한눈에 보는 구조 (그림)
