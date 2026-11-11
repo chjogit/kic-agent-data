@@ -85,6 +85,7 @@ Root directory 가 `/cloudflare` 이면 스크립트가 저장소 루트에 있�
 
 - **동기 엔드포인트를 스레드 없이 실행**: Pyodide(Workers)에는 스레드가 없어, `entry.py` 가 anyio 의 `to_thread.run_sync` 를 패치해 FastAPI 의 동기 엔드포인트를 호출한 자리에서 바로 실행합니다. 배포 후 `/api/jobs` 등을 실제로 열어 동작하는지 확인하세요.
 - **비-Python 파일 번들**: `web/*.html`, `kic.css` 같은 파일이 번들에 포함되어 서빙되는지 확인하세요(`/`, `/quality`, `/static/kic.css`). 화면이 비어 있거나 스타일이 없으면 이 부분을 먼저 의심합니다.
+- **응답 캐시(5분)**: 조회 화면(`/`, `/api/status`, `/api/jobs`, `/api/runs`, `/api/features`, `/api/quality/*`)은 쿼리가 많아 10초 이상 걸려, 인증을 통과한 GET 응답을 isolate 메모리에 5분간 보관합니다(`kic_data/response_cache.py`). 그래서 수집 직후에도 화면에 최대 5분 늦게 반영될 수 있고, isolate 가 바뀌면(한가할 때 등) 처음 한 번은 느립니다. 비밀번호가 틀리거나 없는 요청은 캐시를 건드리지 않습니다. 응답 헤더 `x-cache: HIT/MISS` 로 확인합니다. DB 오류가 담긴 화면과 200 이 아닌 응답은 저장하지 않습니다.
 - **동시 요청**: 락으로 직렬화하지 않습니다. 락을 두면 한 요청이 쥔 락을 기다리던 다른 요청을 Workers 가 "code had hung"(Error 1101)으로 취소합니다. DB 연결은 요청마다 새로 만들어 공유하지 않습니다. pg8000 의 timeout(30초)은 쿼리 하나마다 적용될 뿐 요청 전체의 상한이 아닙니다.
 - **`tzdata` 의존성**: `main.py` 가 `ZoneInfo` 를 쓰기 때문에 `tzdata` 를 의존성에 추가했습니다. 시작 시 import 오류가 나면 가장 먼저 이것을 확인하세요.
 - **쓰기 경로는 막혀 있음**: cron·POST·작업 실행 엔드포인트는 405 입니다. 수집을 지금처럼 GitHub Actions(또는 Vercel)에 둘지는 **사용자가 결정할 사항**입니다. 이 문서는 수집 방식을 바꾸지 않습니다.
