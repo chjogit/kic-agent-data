@@ -149,3 +149,54 @@ def test_oversize_body_is_not_cached(monkeypatch):
     call(app, headers=_auth("pw"))
     call(app, headers=_auth("pw"))
     assert inner.calls == 2
+
+
+@pytest.mark.parametrize("body", [b'{"a":{"error":"OperationalError: x"}}', b'{"opinion":{"connected": false}}',
+                                  "<td>조회 실패: x</td>".encode(), "접속 실패".encode()])
+def test_degraded_200_is_not_cached(body):
+    inner = FakeApp(chunks=(body,))
+    app = rc.response_cache(inner)
+    call(app, headers=_auth("pw"))
+    call(app, headers=_auth("pw"))
+    assert inner.calls == 2
+
+
+def test_null_error_fields_are_still_cached():
+    inner = FakeApp(chunks=(b'{"error": null, "connected": true}',))
+    app = rc.response_cache(inner)
+    call(app, headers=_auth("pw"))
+    assert call(app, headers=_auth("pw"))[2] == b"HIT"
+
+
+def test_exception_mid_response_is_not_cached():
+    class Boom(FakeApp):
+        async def __call__(self, scope, receive, send):
+            self.calls += 1
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"partial", "more_body": True})
+            raise RuntimeError("db died")
+
+    inner = Boom()
+    app = rc.response_cache(inner)
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            call(app, headers=_auth("pw"))
+    assert inner.calls == 2
+
+
+def test_cached_entry_is_not_served_to_wrong_password():
+    inner = FakeApp()
+    app = rc.response_cache(inner)
+    call(app, headers=_auth("pw"))
+    assert call(app, headers=_auth("nope"))[2] is None
+    assert inner.calls == 2
+
+
+def test_expired_entries_are_purged_on_store():
+    clock, inner = Clock(), FakeApp()
+    app = rc.response_cache(inner, ttl=10, max_entries=10, clock=clock)
+    call(app, path="/api/quality/api/x", headers=_auth("pw"), query=b"old")
+    clock.t += 11
+    call(app, path="/api/quality/api/x", headers=_auth("pw"), query=b"new")
+    # 만료된 old 는 정리되어 같은 키 재요청이 MISS (정리 확인은 저장소 크기를 직접 볼 수 없으니 동작으로)
+    assert call(app, path="/api/quality/api/x", headers=_auth("pw"), query=b"old")[2] == b"MISS"
