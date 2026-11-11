@@ -3,10 +3,9 @@
 scripts/build_worker.py 가 kic_data, sql, web, main.py 를 이 폴더로 복사한 뒤에 배포합니다.
 - DB: Hyperdrive 바인딩(HYPERDRIVE_MAIN / HYPERDRIVE_OPINION) + pg8000. 요청마다 새 연결.
 - 읽기 전용 계정이므로 jobs.ensure_schema(DDL)는 건너뜀.
-- 동기 DB 연결을 여러 요청이 같이 쓰지 않도록 asyncio.Lock 으로 직렬화.
+- 락(asyncio.Lock)은 쓰지 않음: 한 요청이 쥔 락을 다른 요청이 기다리면 Workers 가 '요청 간 promise'로 보고 대기 요청을 취소함(Error 1101, code had hung). 연결은 요청마다 새로 만들어 공유하지 않으므로 직렬화가 필요 없음.
 - guard: 허용 목록 밖 요청 405, DASHBOARD_PASSWORD 시크릿이 없으면 503. 비밀값은 출력하지 않음.
 """
-import asyncio
 import os
 
 import anyio.to_thread
@@ -25,21 +24,13 @@ from kic_data.worker_guard import guard  # noqa: F401  (테스트·재사용용�
 
 async def _run_inline(func, *args, **_kw):
     """Pyodide(Workers)에는 스레드가 없어 FastAPI 의 동기 엔드포인트(anyio 스레드풀)가 실패합니다.
-    그래서 호출한 자리에서 바로 실행합니다. 요청은 이미 _LOCK 으로 직렬화돼 있어 추가 비용이 없습니다."""
+    그래서 호출한 자리에서 바로 실행합니다. """
     return func(*args)
 
 
 anyio.to_thread.run_sync = _run_inline   # starlette.concurrency.run_in_threadpool 이 호출 때마다 이 속성을 찾음
 
 _APP = guard(main.app)
-_LOCK = None
-
-
-def _lock() -> asyncio.Lock:
-    global _LOCK
-    if _LOCK is None:
-        _LOCK = asyncio.Lock()
-    return _LOCK
 
 
 def _secret(env, name: str):
@@ -51,7 +42,7 @@ def _secret(env, name: str):
 
 
 def configure(env) -> None:
-    """요청 하나를 위한 설정. 반드시 락 안에서 부릅니다."""
+    """요청 하나를 위한 설정. 매번 같은 값을 다시 넣을 뿐이라 동시에 불려도 안전합니다(await 없음)."""
 
     def main_factory():
         return cf_db.connect_hyperdrive(env.HYPERDRIVE_MAIN)
@@ -77,6 +68,5 @@ def configure(env) -> None:
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        async with _lock():
-            configure(self.env)
-            return await asgi.fetch(_APP, request.js_object, self.env)
+        configure(self.env)
+        return await asgi.fetch(_APP, request.js_object, self.env)
