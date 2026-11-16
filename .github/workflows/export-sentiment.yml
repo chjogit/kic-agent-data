@@ -48,7 +48,7 @@ jobs:
             *) echo "엔드포인트에 $EXPECTED_STORAGE_BRANCH 가 없습니다. 업로드하지 않고 중단합니다."; exit 1 ;;
           esac
       - run: pip install -r requirements.txt
-      - run: python -m kic_data.cli apply-schema
+      - run: python -m kic_data.cli apply-schema --warn-busy   # 잠금 대기 실패는 경고만(내보내기는 새 스키마가 필요 없음, #86)
       - name: export-sentiment
         env:
           MANUAL_DRY_RUN: ${{ inputs.dry_run }}

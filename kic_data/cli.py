@@ -133,9 +133,14 @@ def cmd_apply_schema(args) -> int:
                     _ok("적용", name)
                 for key, val in db.sync_opinion_sequences(conn, oc).items():
                     _ok("시퀀스", f"kic-opinion {key} → {val}")
+    warn_only = bool(getattr(args, "warn_busy", False))  # 내보내기처럼 새 스키마가 필요 없는 조회·집계 작업용 (#86)
     for name in busy:
-        _fail(name, f"다른 연결이 테이블을 쓰고 있어 잠금을 {SCHEMA_LOCK_TIMEOUT} 안에 못 잡음 → 건너뜀 (다음 실행에서 다시)")
-    return 1 if busy else 0
+        msg = f"다른 연결이 테이블을 쓰고 있어 잠금을 {SCHEMA_LOCK_TIMEOUT} 안에 못 잡음 → 건너뜀 (다음 실행에서 다시)"
+        if warn_only:
+            print(f"[WARN] {name}: {msg}")
+        else:
+            _fail(name, msg)
+    return 1 if busy and not warn_only else 0
 
 
 SCHEMA_LOCK_TIMEOUT = "5s"  # 스키마 적용이 잠금을 기다리는 최대 시간 (그동안 같은 테이블의 다른 조회도 막힘)
@@ -2021,7 +2026,10 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="kic_data")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check-db").set_defaults(fn=cmd_check_db)
-    sub.add_parser("apply-schema").set_defaults(fn=cmd_apply_schema)
+    sp = sub.add_parser("apply-schema")
+    sp.add_argument("--warn-busy", action="store_true",
+                    help="잠금 대기에 실패한 sql 만 경고로 남기고 계속(exit 0). SQL 오류·접속 실패는 그대로 실패")
+    sp.set_defaults(fn=cmd_apply_schema)
     sub.add_parser("alert-sync", help="품질 알림을 GitHub Issue 로 동기화").set_defaults(fn=cmd_alert_sync)
     sub.add_parser("check-sources").set_defaults(fn=cmd_check_sources)
     a = sub.add_parser("status"); a.add_argument("--json", default=None, help="결과를 JSON 파일로도 저장"); a.set_defaults(fn=cmd_status)

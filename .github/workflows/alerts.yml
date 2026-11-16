@@ -29,3 +29,11 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m kic_data.cli alert-sync
+      # DB 접속이 막히면 위 단계도 접속 단계에서 죽어 DB 에 실패를 못 남깁니다 → DB 없이 GitHub Issue 1개로 알림 (#86).
+      # 접속이 정상인 다른 이유의 실패면 아무것도 하지 않고, 접속이 돌아오면 이슈를 닫습니다. 비밀값·접속 주소는 이슈에 쓰지 않습니다.
+      - name: DB 접속 불가 알림 (실패 시)
+        if: ${{ failure() }}
+        run: python -m kic_data.outage_notice failure --workflow kic-alerts
+      - name: DB 접속 불가 이슈 닫기 (성공 시)
+        if: ${{ success() }}
+        run: python -m kic_data.outage_notice recovered
