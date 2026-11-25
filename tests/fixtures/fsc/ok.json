@@ -1,0 +1,69 @@
+{
+ "response": {
+  "header": {
+   "resultCode": "00",
+   "resultMsg": "NORMAL SERVICE."
+  },
+  "body": {
+   "numOfRows": 4,
+   "pageNo": 1,
+   "totalCount": 4,
+   "items": {
+    "item": [
+     {
+      "basDt": "20261117",
+      "srtnCd": "005930",
+      "itmsNm": "삼성전자",
+      "clpr": "70000",
+      "mkp": "69500",
+      "hipr": "70500",
+      "lopr": "69000",
+      "trqu": "1000",
+      "trPrc": "70000000",
+      "mrktTotAmt": "1000000000",
+      "lstgStCnt": "5969782550"
+     },
+     {
+      "basDt": "20261118",
+      "srtnCd": "005930",
+      "itmsNm": "삼성전자",
+      "clpr": "71000",
+      "mkp": "70000",
+      "hipr": "71500",
+      "lopr": "69900",
+      "trqu": "2000",
+      "trPrc": "142000000",
+      "mrktTotAmt": "1000000000",
+      "lstgStCnt": "5969782550"
+     },
+     {
+      "basDt": "20261117",
+      "srtnCd": "000660",
+      "itmsNm": "SK하이닉스",
+      "clpr": "180000",
+      "mkp": "179000",
+      "hipr": "181000",
+      "lopr": "178000",
+      "trqu": "300",
+      "trPrc": "54000000",
+      "mrktTotAmt": "1000000000",
+      "lstgStCnt": "5969782550"
+     },
+     {
+      "basDt": "20261118",
+      "srtnCd": "000660",
+      "itmsNm": "SK하이닉스",
+      "clpr": "182000",
+      "mkp": "180000",
+      "hipr": "183000",
+      "lopr": "179500",
+      "trqu": "400",
+      "trPrc": "72800000",
+      "mrktTotAmt": "1000000000",
+      "lstgStCnt": "5969782550"
+     }
+    ]
+   }
+  }
+ }
+}

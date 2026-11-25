@@ -22,4 +22,4 @@ def fetch_prices(ticker: str, start: str) -> list[dict]:
                 "market_cap": None,
             }
         )
-    return rows
+    return [r for r in rows if r["close"] is not None]  # 종가 없는 행은 적재 가드(guards.check_price_rows)에 걸리므로 미리 제외
