@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import env
+from .guards import check_price_rows
 
 # 웹 실행기(kic_data/jobs.py)가 한 번에 일부 종목만 처리할 때 쓰는 필터. None 이면 전체.
 ONLY_TICKERS: ContextVar[frozenset | None] = ContextVar("ONLY_TICKERS", default=None)
@@ -203,6 +204,7 @@ def list_companies(conn, market: str):
 
 
 def upsert_prices(conn, company_id: int, rows: list[dict], source: str) -> int:
+    check_price_rows(rows, who=f"company_id={company_id} ({source})")  # 적재 전 검사: 실패하면 아무것도 쓰지 않음
     sql = (
         "INSERT INTO core.price_daily (company_id, trade_date, open, high, low, close, volume, trade_value, market_cap, source) "
         "VALUES (%(company_id)s, %(trade_date)s, %(open)s, %(high)s, %(low)s, %(close)s, %(volume)s, "

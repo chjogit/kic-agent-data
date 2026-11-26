@@ -61,6 +61,7 @@ from . import db, features, krx_sector, pulse, quarterly, rag, sentiment, status
 from .collectors import (kofia_credit, community, customs, dart, etf, finnhub, fsc, fsc_bond, indices, investor_flow, kospi200, lending, macro,
                          news, sec, trends, us_prices, youtube)
 from .config import env
+from .guards import GuardError
 from .http_util import make_session
 from .universe import (ETF_CATEGORY, ETF_UNIVERSE, KR_UNIVERSE, PEER_THEMES, US_ETF_UNIVERSE, US_UNIVERSE,
                        etf_name_mismatch)
@@ -246,7 +247,12 @@ def cmd_kr_prices(args) -> int:
                 bad += 1
                 continue
             rows = drop_incomplete_today([by_date[d] for d in sorted(by_date)], "KR")
-            n = db.upsert_prices(conn, cid, rows, "fsc")
+            try:
+                n = db.upsert_prices(conn, cid, rows, "fsc")
+            except GuardError as exc:  # 적재 전 검사 실패: 이 종목만 건너뜀
+                _fail(ticker, str(exc))
+                bad += 1
+                continue
             _ok(ticker, f"{n}행 (fsc)")
     return 1 if bad else 0
 
@@ -273,7 +279,12 @@ def _kr_prices_bulk(s, begin, end) -> int:
                 missing += 1
                 continue
             day_rows = drop_incomplete_today([got[d] for d in sorted(got)], "KR")
-            n = db.upsert_prices(conn, cid, day_rows, "fsc")
+            try:
+                n = db.upsert_prices(conn, cid, day_rows, "fsc")
+            except GuardError as exc:  # 적재 전 검사 실패: 누락으로 세어 경보 기준(10%)에 반영
+                _fail(ticker, str(exc))
+                missing += 1
+                continue
             shares = fsc.latest_shares(day_rows)
             if shares:
                 db.update_company_info(conn, cid, shares=shares[0], shares_asof=shares[1])
@@ -293,7 +304,12 @@ def cmd_us_prices(args) -> int:
                 _fail(ticker, f"{type(exc).__name__}: {str(exc)[:120]}")
                 bad += 1
                 continue
-            n = db.upsert_prices(conn, cid, rows, "yfinance")
+            try:
+                n = db.upsert_prices(conn, cid, rows, "yfinance")
+            except GuardError as exc:
+                _fail(ticker, str(exc))
+                bad += 1
+                continue
             _ok(ticker, f"{n}행 (yfinance)")
     return 1 if bad else 0
 

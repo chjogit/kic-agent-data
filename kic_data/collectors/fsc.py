@@ -14,8 +14,21 @@ URL = "https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStock
 _limiter = RateLimiter(0.2)
 
 
+# 이 두 필드가 비면 행을 쓸 수 없습니다 (기준일·종가). 2026-09 V2 전환처럼 필드명이 바뀌면 모든 행에서 비게 됩니다.
+REQUIRED_FIELDS = ("basDt", "clpr")
+
+
+def _missing(field: str, value) -> bool:
+    if field == "clpr":  # '-' 처럼 숫자로 못 읽는 값도 종가 없음으로 봅니다
+        return to_decimal(value) is None
+    return value is None or not str(value).strip()
+
+
 def parse_prices(payload: dict) -> list[dict]:
-    """응답 JSON → core.price_daily 용 행 목록."""
+    """응답 JSON → core.price_daily 용 행 목록.
+
+    필수 필드(REQUIRED_FIELDS)가 빈 행은 버리고 경고합니다. 예전에는 종가 없는 행이 close=NULL 로 저장돼
+    이미 있던 정상 값을 덮어쓸 수 있었습니다. 모든 행에서 비면 응답 형식이 바뀐 것으로 보고 실패합니다."""
     header = payload.get("response", {}).get("header", {})
     if header.get("resultCode") not in ("00", None):
         raise RuntimeError(f"[fsc] 오류 {header.get('resultCode')}: {header.get('resultMsg')}")
@@ -25,8 +38,12 @@ def parse_prices(payload: dict) -> list[dict]:
     item = items.get("item", [])
     if isinstance(item, dict):
         item = [item]
-    rows = []
+    rows, skipped = [], []
     for it in item:
+        missing = [f for f in REQUIRED_FIELDS if _missing(f, it.get(f))]
+        if missing:
+            skipped.append((it.get("srtnCd"), it.get("basDt"), missing))
+            continue
         rows.append(
             {
                 "trade_date": parse_ymd(it["basDt"]),
@@ -41,6 +58,14 @@ def parse_prices(payload: dict) -> list[dict]:
                 "ticker": (it.get("srtnCd") or "").strip().lstrip("A") or None,  # 전 종목 조회에서 종목 구분
             }
         )
+    if skipped and not rows:
+        raise RuntimeError(
+            f"[fsc] 응답 형식 변경 의심: 필수 필드 {'/'.join(REQUIRED_FIELDS)} 가 모든 행({len(skipped)}행)에서 비어 있음 "
+            f"(예: 종목 {skipped[0][0]}, 기준일 {skipped[0][1]}, 빈 필드 {skipped[0][2]})"
+        )
+    if skipped:
+        print(f"[WARN] fsc 필수 필드 빈 행 {len(skipped)}개 제외 (예: 종목 {skipped[0][0]}, "
+              f"기준일 {skipped[0][1]}, 빈 필드 {skipped[0][2]})")
     return rows
 
 
